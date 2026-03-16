@@ -1,0 +1,22 @@
+FROM docker.io/library/golang:1.26-alpine AS builder
+ARG PKG=github.com/gcleroux/external-dns-dnscaster-webhook
+ARG VERSION=dev
+ARG REVISION=dev
+
+RUN echo 'nobody:x:65534:65534:Nobody:/:' > /tmp/passwd && \
+    apk add --no-cache upx=5.0.2-r0
+
+WORKDIR /build
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${REVISION}" ./cmd/webhook && \
+    upx --best --lzma webhook
+
+FROM scratch
+
+COPY --from=builder /tmp/passwd /etc/passwd
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder --chmod=555 /build/webhook /external-dns-dnscaster-webhook
+
+USER 65534
+EXPOSE 8888/tcp
+ENTRYPOINT ["/external-dns-dnscaster-webhook"]
