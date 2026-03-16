@@ -25,14 +25,6 @@ func NewDnscasterProvider(domainFilter *endpoint.DomainFilter, defaults *Dnscast
 		return nil, fmt.Errorf("failed to create the Dnscaster client: %w", err)
 	}
 
-	// // Ensure the Client can connect to the API by fetching system info
-	// info, err := client.GetSystemInfo()
-	// if err != nil {
-	// 	log.Error("failed to connect to the Dnscaster RouterOS API Endpoint: %v", err)
-	// 	return nil, err
-	// }
-	// log.Info("connected to board %s running RouterOS version %s (%s)", info.BoardName, info.Version, info.ArchitectureName)
-
 	// If the client connects properly, create the DNS Provider
 	p := &DnscasterProvider{
 		client:       client,
