@@ -85,13 +85,14 @@ func (c *DnscasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 		_ = resp.Body.Close()
 	}()
 
-	zones, err := decodeResponse[[]Zone](resp, dnscasterZonePath)
+	collection, err := decodeResponse[ListZonesResponse](resp, dnscasterZonePath)
+	log.Debug("Fetched ListZones", "collection", collection)
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("fetched zones", "count", len(zones))
+	log.Debug("fetched zones", "count", len(collection.Zones))
 
-	return zones, nil
+	return collection.Zones, nil
 }
 
 func (c *DnscasterApiClient) GetZoneByDomain(ctx context.Context, domain string) (Zone, error) {
@@ -138,13 +139,13 @@ func (c *DnscasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Ho
 		_ = resp.Body.Close()
 	}()
 
-	hosts, err := decodeResponse[[]Host](resp, dnscasterHostPath)
+	collection, err := decodeResponse[ListHostsResponse](resp, dnscasterHostPath)
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("fetched hosts", "count", len(hosts))
+	log.Debug("fetched hosts", "count", len(collection.Hosts))
 
-	return hosts, nil
+	return collection.Hosts, nil
 }
 
 func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, error) {
@@ -172,16 +173,12 @@ func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, 
 	return host, nil
 }
 
-func (c *DnscasterApiClient) CreateHost(ctx context.Context, zoneID, data string, dnsType DNSType) (Host, error) {
+func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
 	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterHostPath}
 
-	reqBody := CreateHostRequest{
-		Host: CreateHostPayload{
-			Data:    data,
-			DNSType: dnsType,
-			ZoneID:  zoneID,
-		},
-	}
+	log.Debug("CreateHost", "host", host)
+
+	reqBody := UpsertHostRequest{Host: host}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return Host{}, NewDataError("marshal", "createHost body error", err)
@@ -200,23 +197,19 @@ func (c *DnscasterApiClient) CreateHost(ctx context.Context, zoneID, data string
 		_ = resp.Body.Close()
 	}()
 
-	host, err := decodeResponse[Host](resp, dnscasterHostPath)
+	h, err := decodeResponse[Host](resp, dnscasterHostPath)
 	if err != nil {
 		return Host{}, err
 	}
-	log.Debug("created host", "id", host.ID)
+	log.Debug("created host", "id", h.ID)
 
-	return host, nil
+	return h, nil
 }
 
-func (c *DnscasterApiClient) UpdateHost(ctx context.Context, hostID, data string) (Host, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterHostPath, hostID)}
+func (c *DnscasterApiClient) UpdateHost(ctx context.Context, host Host) (Host, error) {
+	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterHostPath, host.ID)}
 
-	reqBody := UpdateHostRequest{
-		Host: UpdateHostPayload{
-			Data: data,
-		},
-	}
+	reqBody := UpsertHostRequest{Host: host}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return Host{}, NewDataError("marshal", "updateHost body error", err)
@@ -235,13 +228,13 @@ func (c *DnscasterApiClient) UpdateHost(ctx context.Context, hostID, data string
 		_ = resp.Body.Close()
 	}()
 
-	host, err := decodeResponse[Host](resp, dnscasterHostPath)
+	h, err := decodeResponse[Host](resp, dnscasterHostPath)
 	if err != nil {
 		return Host{}, err
 	}
 	log.Debug("updated host", "id", host.ID)
 
-	return host, nil
+	return h, nil
 }
 
 func (c *DnscasterApiClient) DeleteHost(ctx context.Context, hostID string) error {

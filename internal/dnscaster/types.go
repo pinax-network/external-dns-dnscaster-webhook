@@ -1,38 +1,31 @@
 package dnscaster
 
-type DNSType string
-
-const (
-	DNSTypeA     DNSType = "A"
-	DNSTypeAAAA  DNSType = "AAAA"
-	DNSTypeCNAME DNSType = "CNAME"
-	DNSTypeTXT   DNSType = "TXT"
-)
+type ListZonesResponse struct {
+	Zones []Zone `json:"collection"`
+}
 
 type Zone struct {
 	ID     string `json:"id"`
 	Domain string `json:"domain"`
 }
 
+type ListHostsResponse struct {
+	Hosts []Host `json:"collection"`
+}
+
+type UpsertHostRequest struct {
+	Host Host `json:"host"`
+}
+
 type Host struct {
-	ID       string `json:"id"`
-	ZoneID   string `json:"zone_id"`
-	DNSName  string `json:"fqdn"`
-	Hostname string `json:"hostname"`
-	DNSType  string `json:"dns_type"`
-	Data     string `json:"data"`
-	TTL      *int64 `json:"ttl"`
-	State    string `json:"state"`
-}
-
-type CreateHostRequest struct {
-	Host CreateHostPayload `json:"host"`
-}
-
-type CreateHostPayload struct {
-	Data    string  `json:"data"`
-	DNSType DNSType `json:"dns_type"`
-	ZoneID  string  `json:"zone_id"`
+	ZoneID   string `json:"zone_id,omitempty"`
+	Data     string `json:"data,omitempty"`
+	DNSType  string `json:"dns_type,omitempty"`
+	ID       string `json:"id,omitempty"`
+	DNSName  string `json:"fqdn,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
+	TTL      int64  `json:"ttl,omitempty"`
+	State    string `json:"state,omitempty"`
 }
 
 type UpdateHostRequest struct {

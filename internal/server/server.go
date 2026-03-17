@@ -22,7 +22,7 @@ func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, err := w.Write([]byte("OK"))
 	if err != nil {
-		log.Error("error writing response: %v", err)
+		log.Error("healthcheck handler", "error writing response", err)
 	}
 }
 
@@ -30,7 +30,7 @@ func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, err := w.Write([]byte("OK"))
 	if err != nil {
-		log.Error("error writing response: %v", err)
+		log.Error("readiness handler", "error writing response", err)
 	}
 }
 
@@ -43,9 +43,9 @@ func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.
 
 	mainServer := createHTTPServer(fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort), mainRouter, config.ServerReadTimeout, config.ServerWriteTimeout)
 	go func() {
-		log.Info("starting server on addr: '%s' ", mainServer.Addr)
+		log.Info("init server", "starting server on addr", mainServer.Addr)
 		if err := mainServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("can't serve on addr: '%s', error: %v", mainServer.Addr, err)
+			log.Error("init server", "can't serve on addr", mainServer.Addr, "error", err)
 		}
 	}()
 
@@ -56,9 +56,9 @@ func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.
 
 	healthServer := createHTTPServer("0.0.0.0:8080", healthRouter, config.ServerReadTimeout, config.ServerWriteTimeout)
 	go func() {
-		log.Info("starting health server on addr: '%s' ", healthServer.Addr)
+		log.Info("init server", "starting health server on addr", healthServer.Addr)
 		if err := healthServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("can't serve health on addr: '%s', error: %v", healthServer.Addr, err)
+			log.Error("init server", "can't serve health on addr", healthServer.Addr, "error", err)
 		}
 	}()
 
@@ -79,15 +79,15 @@ func ShutdownGracefully(mainServer *http.Server, healthServer *http.Server) {
 	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	sig := <-sigCh
 
-	log.Info("shutting down servers due to received signal: %v", sig)
+	log.Info("shutdown", "shutting down servers due to received signal", sig)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := mainServer.Shutdown(ctx); err != nil {
-		log.Error("error shutting down main server: %v", err)
+		log.Error("shutdown", "error shutting down main server", err)
 	}
 
 	if err := healthServer.Shutdown(ctx); err != nil {
-		log.Error("error shutting down health server: %v", err)
+		log.Error("shutdown", "error shutting down health server", err)
 	}
 }

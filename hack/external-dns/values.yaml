@@ -1,0 +1,34 @@
+---
+fullnameOverride: external-dns-dnscaster
+
+logLevel: debug
+logFormat: text
+
+interval: 5s
+sources: ["gateway-httproute", "gateway-grpcroute", "service", "crd"]
+registry: txt
+txtOwnerId: external-dns
+domainFilters: ["dnstest.pinax.network"]
+excludeDomains: []
+policy: sync
+
+provider:
+  name: webhook
+  webhook:
+    image:
+      repository: localhost:5001/external-dns-dnscaster
+      tag: latest
+      pullPolicy: Always
+    env:
+      - name: LOG_FORMAT
+        value: text
+      - name: LOG_LEVEL
+        value: debug
+      - name: DNSCASTER_SKIP_TLS_VERIFY
+        value: "false"
+
+      - name: DNSCASTER_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: dnscaster-api-key
+            key: API_KEY

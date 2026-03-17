@@ -1,0 +1,4 @@
+.envrc
+.direnv
+secrets/API_KEY
+main

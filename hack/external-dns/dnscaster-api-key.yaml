@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Secret
+metadata:
+    name: dnscaster-api-key
+type: Opaque
+stringData:
+    API_KEY: ENC[AES256_GCM,data:1VttkZ9+5fyp3hj5twS9qD2AqORbQyl+MUWCOrnkjL3xGPQ9,iv:Qi/TQ+Rhmvh/qlj0CRXx/KpETjXocxOssgfnwJPnCRo=,tag:8oBj13Vzj0ycq5DsjVn8Cg==,type:str]
+sops:
+    age:
+        - recipient: age1w25xrwp4207snq0nr7ext6slkph3n5zw0u6t358k46p7v9zx0udstxpw5c
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSArU0FvaWU3ZWVOVXVPNkNm
+            SDJQT2JkWkxyb0xpZ0lJUUZFa25LY2pvcnk4CkVsM2duNy9oeWNrWmg2VWI3L21M
+            eXdOOHQyUVlsVE5TZUJDWlJ3VEF2Z2MKLS0tIDRIQ0xzdDdGKzh2U3NJWDhTOEdR
+            SzJKV0dkaFZ0MTEzSCtKS3NhQ0sxRjQKwVwJwVKsBgmwxPo9zciza46UHr8gwnya
+            s/16cqn7vnsHd0FZ/0wb8azd4QvfO4p+tYJ9JzzATiEriDqeOEaFVg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-03-17T17:52:17Z"
+    mac: ENC[AES256_GCM,data:yspyPs4wjGhnSYa3ePh1FmKR3ZVhx2H+n313Cn8r6XPasyjCFshqnU2zt25BVS9574BhUdnCne2wDu+n5UXzH1oWFzXPoTrpy00z5usIj7LYIGrvq/DP5U1PW4i9oqjnmuwH/mgYfe5WwOAtn6DsbWrDtlSeFob6APcGY56PRhc=,iv:9JnjQHhsr5rG17PUWVUPVFV7gvq829dC+RK/SD3GA7c=,tag:DwhtZVEt2K2GjBQfTwovIQ==,type:str]
+    encrypted_regex: ^(data|stringData)$
+    version: 3.12.1
