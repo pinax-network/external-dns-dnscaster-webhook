@@ -30,6 +30,8 @@ provider:
         value: debug
       - name: DNSCASTER_SKIP_TLS_VERIFY
         value: "false"
+      - name: DOMAIN_FILTER
+        value: "dnstest.pinax.network"
 
       - name: DNSCASTER_API_KEY
         valueFrom:

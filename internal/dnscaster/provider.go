@@ -43,12 +43,13 @@ func (p *DnscasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 		return nil, err
 	}
 
-	records := make([]*endpoint.Endpoint, 0)
-	for _, zone := range zones {
-		if !p.domainFilter.Match(zone.Domain) {
-			continue
-		}
+	managedZones, err := p.filterManagedZones(ctx, zones)
+	if err != nil {
+		return nil, err
+	}
 
+	records := make([]*endpoint.Endpoint, 0)
+	for _, zone := range managedZones {
 		hosts, err := p.client.ListHosts(ctx, zone.ID)
 		if err != nil {
 			return nil, err
@@ -58,7 +59,6 @@ func (p *DnscasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 			records = append(records, endpoint.NewEndpointWithTTL(host.DNSName, host.DNSType, endpoint.TTL(host.TTL), host.Data))
 		}
 	}
-
 	return records, nil
 }
 
@@ -68,59 +68,49 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 		return err
 	}
 
-	zonesMap := make(map[string]string, len(zones))
-	for _, zone := range zones {
-		if !p.domainFilter.Match(zone.Domain) {
-			continue
-		}
+	managedZones, err := p.filterManagedZones(ctx, zones)
+	if err != nil {
+		return err
+	}
+
+	zonesMap := make(map[string]string, len(managedZones))
+	for _, zone := range managedZones {
 		zonesMap[zone.Domain] = zone.ID
 	}
-	log.Debug("ApplyChanges", "zonesMap", zonesMap)
 
-	var hosts []Host
+	hostsMap := make(map[string]string)
 	for _, id := range zonesMap {
-		h, err := p.client.ListHosts(ctx, id)
+		hosts, err := p.client.ListHosts(ctx, id)
 		if err != nil {
 			return err
 		}
-		hosts = append(hosts, h...)
-	}
-	log.Debug("ApplyChanges", "hosts", hosts)
-
-	for _, record := range changes.Create {
-		// TODO: Find a better way to split parent zone from hostname
-		stubs := strings.SplitN(record.DNSName, ".", 2)
-
-		zoneID, ok := zonesMap[stubs[1]]
-		if !ok {
-			continue
-		}
-
-		host := Host{
-			ZoneID: zoneID,
-			// TODO: Shouldn't only take the first target, find a better way
-			Data:     record.Targets[0],
-			DNSType:  record.RecordType,
-			DNSName:  record.DNSName,
-			Hostname: stubs[0],
-			TTL:      p.client.DefaultTTL,
-		}
-		if &record.RecordTTL != nil {
-			host.TTL = int64(record.RecordTTL)
-		}
-
-		_, err := p.client.CreateHost(ctx, host)
-		if err != nil {
-			return err
-		}
-	}
-
-	for _, record := range changes.Delete {
 		for _, host := range hosts {
-			if record.DNSName == host.DNSName {
-				if err := p.client.DeleteHost(ctx, host.ID); err != nil {
-					return err
-				}
+			hostsMap[host.DNSName] = host.ID
+		}
+	}
+
+	// Process deletions (records to update will be deleted and recreated later)
+	for _, record := range append(changes.UpdateOld, changes.Delete...) {
+		hostID, _ := hostsMap[record.DNSName]
+		log.Debug("ApplyChanges - Delete", "record.DNSName", record.DNSName, "hostID", hostID)
+		if err := p.client.DeleteHost(ctx, hostID); err != nil {
+			return err
+		}
+	}
+
+	// Process creates (updated records are recreated here)
+	for _, record := range append(changes.Create, changes.UpdateNew...) {
+		hosts := p.hostsForEndpoint(record)
+		hostname, zone := p.trimHostnameFromFQDN(record)
+		log.Debug("ApplyChanges - Create", "hostname", hostname, "zone", zone)
+
+		for _, host := range hosts {
+			host.Hostname = hostname
+			host.ZoneID = zonesMap[zone]
+
+			_, err := p.client.CreateHost(ctx, host)
+			if err != nil {
+				return err
 			}
 		}
 	}
@@ -131,4 +121,83 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 // GetDomainFilter returns the domain filter for the provider.
 func (p *DnscasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
+}
+
+func (p *DnscasterProvider) filterManagedZones(ctx context.Context, zones []Zone) ([]Zone, error) {
+	var filtered []Zone
+
+	for _, zone := range zones {
+		if !p.domainFilter.Match(zone.Domain) {
+			log.Debug("filterManagedZones", "skipping zone as it does not match domain filter", zone.Domain)
+			continue
+		}
+
+		filtered = append(filtered, zone)
+	}
+	log.Debug("filterManagedZones", "total managed zones", len(filtered))
+	return filtered, nil
+}
+
+func (p *DnscasterProvider) hostsForEndpoint(record *endpoint.Endpoint) []Host {
+	ttl := p.defaultTTL(record)
+	hosts := make([]Host, 0, len(record.Targets))
+	for _, target := range endpoint.NewTargets(record.Targets...) {
+		hosts = append(hosts, Host{
+			Data:    target,
+			DNSType: record.RecordType,
+			DNSName: record.DNSName,
+			TTL:     ttl,
+		})
+	}
+	return hosts
+}
+
+func (p *DnscasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {
+	if record.RecordTTL.IsConfigured() {
+		return int64(record.RecordTTL)
+	}
+	return p.client.DefaultTTL
+}
+
+func (p *DnscasterProvider) trimHostnameFromFQDN(record *endpoint.Endpoint) (string, string) {
+	var bestFilter string
+
+	for _, filter := range p.domainFilter.Filters {
+		log.Debug("trimHostnameFromFQDN", "testing filter", filter)
+		if filter == "" {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(filter, ".") && strings.HasSuffix(record.DNSName, filter):
+			if len(filter) > len(bestFilter) {
+				bestFilter = filter
+			}
+		case strings.Count(record.DNSName, ".") == strings.Count(filter, ".") && record.DNSName == filter:
+			if len(filter) > len(bestFilter) {
+				bestFilter = filter
+			}
+		case strings.HasSuffix(record.DNSName, "."+filter):
+			if len(filter) > len(bestFilter) {
+				bestFilter = filter
+			}
+		}
+	}
+
+	switch {
+	case bestFilter == "":
+		return "", record.DNSName
+
+	case strings.HasPrefix(bestFilter, "."):
+		hostname := strings.TrimSuffix(record.DNSName, bestFilter)
+		zone := strings.TrimPrefix(bestFilter, ".")
+		return hostname, zone
+
+	case record.DNSName == bestFilter:
+		return "", bestFilter
+
+	default:
+		hostname := strings.TrimSuffix(record.DNSName, "."+bestFilter)
+		return hostname, bestFilter
+	}
 }

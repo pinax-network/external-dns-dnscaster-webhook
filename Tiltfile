@@ -77,5 +77,3 @@ helm_resource(
     image_deps=[IMG],
     image_keys=[('provider.webhook.image.repository', 'provider.webhook.image.tag')],
 )
-
-k8s_yaml(listdir("./example", recursive = True ))

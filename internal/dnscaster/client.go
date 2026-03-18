@@ -86,7 +86,6 @@ func (c *DnscasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 	}()
 
 	collection, err := decodeResponse[ListZonesResponse](resp, dnscasterZonePath)
-	log.Debug("Fetched ListZones", "collection", collection)
 	if err != nil {
 		return nil, err
 	}
@@ -175,8 +174,6 @@ func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, 
 
 func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
 	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterHostPath}
-
-	log.Debug("CreateHost", "host", host)
 
 	reqBody := UpsertHostRequest{Host: host}
 	bodyBytes, err := json.Marshal(reqBody)
