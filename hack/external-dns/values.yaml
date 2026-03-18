@@ -5,7 +5,11 @@ logLevel: debug
 logFormat: text
 
 interval: 5s
-sources: ["gateway-httproute", "gateway-grpcroute", "service", "crd"]
+sources:
+  - gateway-httproute
+  - ingress
+  - service
+  - crd
 registry: txt
 txtOwnerId: external-dns
 domainFilters: ["dnstest.pinax.network"]

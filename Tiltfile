@@ -29,10 +29,10 @@ helm_resource(
 )
 
 local_resource(
-    'cilium-lb',
-    cmd='kubectl apply -f ./hack/cilium/cilium-lb.yaml',
+    'cilium-manifests',
+    cmd='kubectl apply -f ./hack/cilium/manifests.yaml',
     resource_deps=['cilium-install'],
-    deps=['./hack/cilium/cilium-lb.yaml']
+    deps=['./hack/cilium/manifests.yaml']
 )
 
 ###############################################
@@ -78,3 +78,4 @@ helm_resource(
     image_keys=[('provider.webhook.image.repository', 'provider.webhook.image.tag')],
 )
 
+k8s_yaml(listdir("./example", recursive = True ))
