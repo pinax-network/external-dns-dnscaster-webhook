@@ -6,6 +6,7 @@ metadata:
   annotations:
     external-dns.alpha.kubernetes.io/hostname: "service.dnstest.pinax.network"
 spec:
+  ipFamilyPolicy: RequireDualStack
   selector:
     app: nginx
   ports:

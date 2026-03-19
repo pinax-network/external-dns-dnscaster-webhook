@@ -18,9 +18,11 @@ import (
 )
 
 const (
-	dnscasterBaseUrl  = "api.dnscaster.com"
-	dnscasterZonePath = "v1/zones"
-	dnscasterHostPath = "v1/hosts"
+	dnscasterBaseUrl            = "api.dnscaster.com"
+	dnscasterZonePath           = "v1/zones"
+	dnscasterHostPath           = "v1/hosts"
+	dnscasterMonitorPath        = "v1/ip_monitors"
+	dnscasterNameserverSetsPath = "v1/nameserver_sets"
 
 	errorBodyBufferSize = 512
 )
@@ -89,7 +91,7 @@ func (c *DnscasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("fetched zones", "count", len(collection.Zones))
+	log.Debug("ListZones", "count", len(collection.Zones))
 
 	return collection.Zones, nil
 }
@@ -114,7 +116,7 @@ func (c *DnscasterApiClient) GetZoneByDomain(ctx context.Context, domain string)
 	if err != nil {
 		return Zone{}, err
 	}
-	log.Debug("fetched zone", "domain", domain)
+	log.Debug("GetZoneByDomain", "zone", zone)
 
 	return zone, nil
 }
@@ -142,7 +144,7 @@ func (c *DnscasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Ho
 	if err != nil {
 		return nil, err
 	}
-	log.Debug("fetched hosts", "count", len(collection.Hosts))
+	log.Debug("ListHosts", "count", len(collection.Hosts))
 
 	return collection.Hosts, nil
 }
@@ -167,12 +169,13 @@ func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, 
 	if err != nil {
 		return Host{}, err
 	}
-	log.Debug("fetched host", "id", hostID)
+	log.Debug("GetHost", "host", host)
 
 	return host, nil
 }
 
 func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
+	log.Debug("CreateHost", "host", host)
 	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterHostPath}
 
 	reqBody := UpsertHostRequest{Host: host}
@@ -198,38 +201,7 @@ func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, e
 	if err != nil {
 		return Host{}, err
 	}
-	log.Debug("created host", "id", h.ID)
-
-	return h, nil
-}
-
-func (c *DnscasterApiClient) UpdateHost(ctx context.Context, host Host) (Host, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterHostPath, host.ID)}
-
-	reqBody := UpsertHostRequest{Host: host}
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return Host{}, NewDataError("marshal", "updateHost body error", err)
-	}
-
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodPut,
-		u,
-		bytes.NewReader(bodyBytes),
-	)
-	if err != nil {
-		return Host{}, errors.Wrap(err, "failed to create DNS hosts from DNScaster")
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	h, err := decodeResponse[Host](resp, dnscasterHostPath)
-	if err != nil {
-		return Host{}, err
-	}
-	log.Debug("updated host", "id", host.ID)
+	log.Debug("CreateHost", "host", h)
 
 	return h, nil
 }
@@ -246,9 +218,132 @@ func (c *DnscasterApiClient) DeleteHost(ctx context.Context, hostID string) erro
 	if err != nil {
 		return errors.Wrap(err, "failed to delete DNS hosts from DNScaster")
 	}
-	log.Debug("deleted host", "id", hostID)
+	log.Debug("DeleteHost", "host.id", hostID)
 
 	return nil
+}
+
+func (c *DnscasterApiClient) ListMonitors(ctx context.Context) ([]Monitor, error) {
+	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterMonitorPath}
+
+	resp, err := c.doRequest(
+		ctx,
+		http.MethodGet,
+		u,
+		nil,
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to fetch IP monitors from DNScaster")
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	collection, err := decodeResponse[ListMonitorsResponse](resp, dnscasterMonitorPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Debug("ListMonitors", "count", len(collection.Monitors))
+
+	return collection.Monitors, nil
+}
+
+func (c *DnscasterApiClient) GetMonitor(ctx context.Context, monitorID string) (Monitor, error) {
+	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterMonitorPath, monitorID)}
+
+	resp, err := c.doRequest(
+		ctx,
+		http.MethodGet,
+		u,
+		nil,
+	)
+	if err != nil {
+		return Monitor{}, errors.Wrap(err, "failed to fetch ip_monitor from DNScaster")
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	monitor, err := decodeResponse[Monitor](resp, dnscasterMonitorPath)
+	if err != nil {
+		return Monitor{}, err
+	}
+	log.Debug("GetMonitor", "monitor", monitor)
+
+	return monitor, nil
+}
+
+func (c *DnscasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error) {
+	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterMonitorPath}
+
+	reqBody := UpsertMonitorRequest{Monitor: monitor}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return Monitor{}, NewDataError("marshal", "createMonitor body error", err)
+	}
+
+	resp, err := c.doRequest(
+		ctx,
+		http.MethodPost,
+		u,
+		bytes.NewReader(bodyBytes),
+	)
+	if err != nil {
+		return Monitor{}, errors.Wrap(err, "failed to post ip_monitor to DNScaster")
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	m, err := decodeResponse[Monitor](resp, dnscasterMonitorPath)
+	if err != nil {
+		return Monitor{}, err
+	}
+	log.Debug("CreateMonitor", "monitor", m)
+
+	return m, nil
+}
+
+func (c *DnscasterApiClient) DeleteMonitor(ctx context.Context, monitorID string) error {
+	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterMonitorPath, monitorID)}
+
+	_, err := c.doRequest(
+		ctx,
+		http.MethodDelete,
+		u,
+		nil,
+	)
+	if err != nil {
+		return errors.Wrap(err, "failed to delete IP monitor from DNScaster")
+	}
+	log.Debug("DeleteMonitor", "monitor.id", monitorID)
+
+	return nil
+}
+
+func (c *DnscasterApiClient) ListNameserverSets(ctx context.Context) ([]NameserverSet, error) {
+	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterNameserverSetsPath}
+
+	resp, err := c.doRequest(
+		ctx,
+		http.MethodGet,
+		u,
+		nil,
+	)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to fetch nameserver sets from DNScaster")
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	res, err := decodeResponse[ListDNScasterResponse[NameserverSet]](resp, dnscasterMonitorPath)
+	if err != nil {
+		return nil, err
+	}
+	log.Debug("ListNameserverSets", "count", len(res.Collection))
+
+	return res.Collection, nil
 }
 
 func (c *DnscasterApiClient) doRequest(ctx context.Context, method string, url url.URL, body io.Reader) (*http.Response, error) {
