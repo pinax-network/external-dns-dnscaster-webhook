@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/pkg/errors"
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
@@ -101,7 +100,7 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 			return err
 		}
 		for _, host := range hosts {
-			hostsMap[host.DNSName] = host
+			hostsMap[host.FQDN] = host
 		}
 	}
 
@@ -112,7 +111,7 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 		host, ok := hostsMap[record.DNSName]
 		if !ok {
 			// Sanity check, should not happen
-			return errors.New("tried to delete host that doesn't exist in DNScaster")
+			return fmt.Errorf("tried to delete host that doesn't exist in DNScaster: %w", err)
 		}
 
 		if err := p.client.DeleteHost(ctx, host.ID); err != nil {
@@ -205,13 +204,13 @@ func (p *DnscasterProvider) hostsForEndpoint(record *endpoint.Endpoint) Host {
 	return Host{
 		Data:    record.Targets[0],
 		DNSType: record.RecordType,
-		DNSName: record.DNSName,
+		FQDN:    record.DNSName,
 		TTL:     ttl,
 	}
 }
 
 func (p *DnscasterProvider) endpointFromHost(ctx context.Context, host Host) (*endpoint.Endpoint, error) {
-	endpoint := endpoint.NewEndpointWithTTL(host.DNSName, host.DNSType, endpoint.TTL(host.TTL), host.Data)
+	endpoint := endpoint.NewEndpointWithTTL(host.FQDN, host.DNSType, endpoint.TTL(host.TTL), host.Data)
 
 	if host.IPMonitorID != "" {
 		monitor, err := p.client.GetMonitor(ctx, host.IPMonitorID)

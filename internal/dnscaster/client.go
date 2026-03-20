@@ -5,26 +5,26 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"path"
 
-	"github.com/pkg/errors"
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
 )
 
+// Note: Methods would be a good fit to be rewritten with generics in mind now that
+//       https://github.com/golang/go/issues/77273 is accepted.
+
 const (
 	dnscasterBaseUrl            = "api.dnscaster.com"
-	dnscasterZonePath           = "v1/zones"
-	dnscasterHostPath           = "v1/hosts"
-	dnscasterMonitorPath        = "v1/ip_monitors"
-	dnscasterNameserverSetsPath = "v1/nameserver_sets"
-
-	errorBodyBufferSize = 512
+	dnscasterZonePath           = "v1/zones/"
+	dnscasterHostPath           = "v1/hosts/"
+	dnscasterMonitorPath        = "v1/ip_monitors/"
+	dnscasterNameserverSetsPath = "v1/nameserver_sets/"
 )
 
 type DnscasterDefaults struct {
@@ -72,329 +72,195 @@ func NewDnscasterClient(config *DnscasterConnectionConfig, defaults *DnscasterDe
 }
 
 func (c *DnscasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterZonePath}
+	var out ListResponse[Zone]
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to fetch DNS zones from DNScaster")
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	collection, err := decodeResponse[ListZonesResponse](resp, dnscasterZonePath)
-	if err != nil {
+	if err := c.do(ctx, http.MethodGet, dnscasterZonePath, nil, nil, &out); err != nil {
 		return nil, err
 	}
-	log.Debug("ListZones", "count", len(collection.Zones))
 
-	return collection.Zones, nil
+	log.Debug("ListZones", "count", len(out.Collection))
+	return out.Collection, nil
 }
 
-func (c *DnscasterApiClient) GetZoneByDomain(ctx context.Context, domain string) (Zone, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterZonePath, domain)}
+func (c *DnscasterApiClient) GetZone(ctx context.Context, domain string) (Zone, error) {
+	var out Zone
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return Zone{}, errors.Wrap(err, "failed to fetch DNS zones from DNScaster")
+	if err := c.do(ctx, http.MethodGet, dnscasterZonePath+domain, nil, nil, &out); err != nil {
+		return out, err
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	zone, err := decodeResponse[Zone](resp, dnscasterZonePath)
-	if err != nil {
-		return Zone{}, err
-	}
-	log.Debug("GetZoneByDomain", "zone", zone)
-
-	return zone, nil
+	log.Debug("GetZoneByDomain", "zone", out)
+	return out, nil
 }
 
 func (c *DnscasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Host, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterHostPath}
-	q := u.Query()
+	var out ListResponse[Host]
+
+	q := url.Values{}
 	q.Set("zone_id", zoneID)
-	u.RawQuery = q.Encode()
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to fetch DNS hosts from DNScaster")
+	if err := c.do(ctx, http.MethodGet, dnscasterHostPath, q, nil, &out); err != nil {
+		return nil, fmt.Errorf("failed to list hosts: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	collection, err := decodeResponse[ListHostsResponse](resp, dnscasterHostPath)
-	if err != nil {
-		return nil, err
-	}
-	log.Debug("ListHosts", "count", len(collection.Hosts))
-
-	return collection.Hosts, nil
+	log.Debug("ListHosts", "count", len(out.Collection))
+	return out.Collection, nil
 }
 
 func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterHostPath, hostID)}
+	var out Host
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return Host{}, errors.Wrap(err, "failed to fetch DNS hosts from DNScaster")
+	if err := c.do(ctx, http.MethodGet, dnscasterHostPath+hostID, nil, nil, &out); err != nil {
+		return out, fmt.Errorf("failed to get host: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	host, err := decodeResponse[Host](resp, dnscasterHostPath)
-	if err != nil {
-		return Host{}, err
-	}
-	log.Debug("GetHost", "host", host)
-
-	return host, nil
+	log.Debug("GetHost", "host", out)
+	return out, nil
 }
 
 func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
-	log.Debug("CreateHost", "host", host)
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterHostPath}
+	var out Host
 
-	reqBody := UpsertHostRequest{Host: host}
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return Host{}, NewDataError("marshal", "createHost body error", err)
+	if err := c.do(ctx, http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: host}, &out); err != nil {
+		return out, fmt.Errorf("failed to create host: %w", err)
 	}
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodPost,
-		u,
-		bytes.NewReader(bodyBytes),
-	)
-	if err != nil {
-		return Host{}, errors.Wrap(err, "failed to create DNS hosts from DNScaster")
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	h, err := decodeResponse[Host](resp, dnscasterHostPath)
-	if err != nil {
-		return Host{}, err
-	}
-	log.Debug("CreateHost", "host", h)
-
-	return h, nil
+	log.Debug("CreateHost", "host", out)
+	return out, nil
 }
 
 func (c *DnscasterApiClient) DeleteHost(ctx context.Context, hostID string) error {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterHostPath, hostID)}
-
-	_, err := c.doRequest(
-		ctx,
-		http.MethodDelete,
-		u,
-		nil,
-	)
-	if err != nil {
-		return errors.Wrap(err, "failed to delete DNS hosts from DNScaster")
+	if err := c.do(ctx, http.MethodDelete, dnscasterHostPath+hostID, nil, nil, nil); err != nil {
+		return fmt.Errorf("failed to delete host: %w", err)
 	}
 	log.Debug("DeleteHost", "host.id", hostID)
-
 	return nil
 }
 
 func (c *DnscasterApiClient) ListMonitors(ctx context.Context) ([]Monitor, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterMonitorPath}
+	var out ListResponse[Monitor]
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to fetch IP monitors from DNScaster")
+	if err := c.do(ctx, http.MethodGet, dnscasterMonitorPath, nil, nil, &out); err != nil {
+		return nil, fmt.Errorf("failed to list monitors: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	collection, err := decodeResponse[ListMonitorsResponse](resp, dnscasterMonitorPath)
-	if err != nil {
-		return nil, err
-	}
-	log.Debug("ListMonitors", "count", len(collection.Monitors))
-
-	return collection.Monitors, nil
+	log.Debug("ListMonitors", "count", len(out.Collection))
+	return out.Collection, nil
 }
 
 func (c *DnscasterApiClient) GetMonitor(ctx context.Context, monitorID string) (Monitor, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterMonitorPath, monitorID)}
+	var out Monitor
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return Monitor{}, errors.Wrap(err, "failed to fetch ip_monitor from DNScaster")
+	if err := c.do(ctx, http.MethodGet, dnscasterMonitorPath+monitorID, nil, nil, &out); err != nil {
+		return out, fmt.Errorf("failed to get monitor: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	monitor, err := decodeResponse[Monitor](resp, dnscasterMonitorPath)
-	if err != nil {
-		return Monitor{}, err
-	}
-	log.Debug("GetMonitor", "monitor", monitor)
-
-	return monitor, nil
+	log.Debug("GetMonitor", "monitor", out)
+	return out, nil
 }
 
 func (c *DnscasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterMonitorPath}
+	var out Monitor
 
-	reqBody := UpsertMonitorRequest{Monitor: monitor}
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return Monitor{}, NewDataError("marshal", "createMonitor body error", err)
+	if err := c.do(ctx, http.MethodPost, dnscasterMonitorPath, nil, MonitorEnvelope{Monitor: monitor}, &out); err != nil {
+		return out, fmt.Errorf("failed to create monitor: %w", err)
 	}
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodPost,
-		u,
-		bytes.NewReader(bodyBytes),
-	)
-	if err != nil {
-		return Monitor{}, errors.Wrap(err, "failed to post ip_monitor to DNScaster")
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	m, err := decodeResponse[Monitor](resp, dnscasterMonitorPath)
-	if err != nil {
-		return Monitor{}, err
-	}
-	log.Debug("CreateMonitor", "monitor", m)
-
-	return m, nil
+	log.Debug("CreateMonitor", "monitor", out)
+	return out, nil
 }
 
 func (c *DnscasterApiClient) DeleteMonitor(ctx context.Context, monitorID string) error {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path.Join(dnscasterMonitorPath, monitorID)}
-
-	_, err := c.doRequest(
-		ctx,
-		http.MethodDelete,
-		u,
-		nil,
-	)
-	if err != nil {
-		return errors.Wrap(err, "failed to delete IP monitor from DNScaster")
+	if err := c.do(ctx, http.MethodDelete, dnscasterMonitorPath+monitorID, nil, nil, nil); err != nil {
+		return fmt.Errorf("failed to delete monitor: %w", err)
 	}
-	log.Debug("DeleteMonitor", "monitor.id", monitorID)
 
+	log.Debug("DeleteMonitor", "monitor.id", monitorID)
 	return nil
 }
 
 func (c *DnscasterApiClient) ListNameserverSets(ctx context.Context) ([]NameserverSet, error) {
-	u := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: dnscasterNameserverSetsPath}
+	var out ListResponse[NameserverSet]
 
-	resp, err := c.doRequest(
-		ctx,
-		http.MethodGet,
-		u,
-		nil,
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to fetch nameserver sets from DNScaster")
+	if err := c.do(ctx, http.MethodGet, dnscasterNameserverSetsPath, nil, nil, &out); err != nil {
+		return nil, fmt.Errorf("failed to list nameserver_sets: %w", err)
 	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
 
-	res, err := decodeResponse[ListDNScasterResponse[NameserverSet]](resp, dnscasterMonitorPath)
-	if err != nil {
-		return nil, err
-	}
-	log.Debug("ListNameserverSets", "count", len(res.Collection))
-
-	return res.Collection, nil
+	log.Debug("ListNameserverSets", "count", len(out.Collection))
+	return out.Collection, nil
 }
 
-func (c *DnscasterApiClient) doRequest(ctx context.Context, method string, url url.URL, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url.String(), body)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create HTTP request")
+func (c *DnscasterApiClient) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+	var bodyReader io.Reader
+	var err error
+
+	url := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path}
+
+	if body != nil {
+		bodyReader, err = encodeJSON(body)
+		if err != nil {
+			return err
+		}
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.ApiKey)
+	if query != nil {
+		q := url.Query()
+		for k, vals := range query {
+			for _, v := range vals {
+				q.Add(k, v)
+			}
+		}
+		url.RawQuery = q.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url.String(), bodyReader)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
 	req.Header.Set("Accept", "application/json")
+	if c.ApiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.ApiKey)
+	}
 	if req.Body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, NewNetworkError(method, url.String(), err)
+		return NewNetworkError(method, url.String(), err)
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, c.handleErrorResponse(resp, method, url.String())
+		apiErr, decodeErr := decodeJSON[DnscasterErrorResponse](resp.Body)
+		if decodeErr != nil {
+			return NewDataError("unmarshal", "API error response", decodeErr)
+		}
+		return NewAPIError(method, path, resp.StatusCode, apiErr.Message, apiErr.Errors)
 	}
 
-	return resp, nil
+	// DNScaster returns 202 only on successful DELETE without a response body
+	if resp.StatusCode == http.StatusAccepted {
+		return nil
+	}
+
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// handleErrorResponse processes non-200 status codes and returns appropriate errors.
-func (c *DnscasterApiClient) handleErrorResponse(resp *http.Response, method, path string) error {
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, errorBodyBufferSize))
-	if err != nil {
-		return NewDataError("read", "error response body", err)
+func encodeJSON(v any) (io.Reader, error) {
+	if v == nil {
+		return nil, nil
 	}
-
-	var apiError DnscasterErrorResponse
-	err = json.Unmarshal(bodyBytes, &apiError)
+	b, err := json.Marshal(v)
 	if err != nil {
-		return NewDataError("unmarshal", "API error response", err)
+		return nil, err
 	}
-
-	return NewAPIError(method, path, resp.StatusCode, apiError.Message, apiError.Errors)
+	return bytes.NewReader(b), nil
 }
 
-func decodeResponse[T any](resp *http.Response, path string) (T, error) {
+func decodeJSON[T any](r io.Reader) (T, error) {
 	var out T
-
-	if resp.StatusCode == http.StatusNoContent {
-		return out, nil
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return out, NewDataError("decode", path, err)
-	}
-	return out, nil
+	err := json.NewDecoder(r).Decode(&out)
+	return out, err
 }
