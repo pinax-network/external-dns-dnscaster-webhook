@@ -93,25 +93,35 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 		zonesMap[zone.Domain] = zone.ID
 	}
 
-	hostsMap := make(map[string]Host)
-	for _, id := range zonesMap {
-		hosts, err := p.client.ListHosts(ctx, id)
-		if err != nil {
-			return err
-		}
-		for _, host := range hosts {
-			hostsMap[host.FQDN] = host
-		}
+	type hostKey struct {
+		FQDN   string
+		Type   string
+		Target string
 	}
+	hostsMap := make(map[hostKey]Host)
 
 	// Process deletions (records to update will be deleted and recreated later)
 	for _, record := range append(changes.UpdateOld, changes.Delete...) {
 		log.Debug("ApplyChanges - Delete", "record", record)
 
-		host, ok := hostsMap[record.DNSName]
+		hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
+		host, ok := hostsMap[hk]
+
 		if !ok {
-			// Sanity check, should not happen
-			return fmt.Errorf("tried to delete host that doesn't exist in DNScaster: %w", err)
+			// Will need to add the zone's hosts to map
+			_, zone := p.trimHostnameFromFQDN(record)
+			hosts, err := p.client.ListHosts(ctx, zonesMap[zone])
+			if err != nil {
+				return err
+			}
+
+			for _, h := range hosts {
+				hk := hostKey{FQDN: h.FQDN, Type: h.DNSType, Target: h.Data}
+				hostsMap[hk] = h
+			}
+
+			// Set the host now that the map is populated
+			host = hostsMap[hk]
 		}
 
 		if err := p.client.DeleteHost(ctx, host.ID); err != nil {
@@ -124,7 +134,6 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 				return err
 			}
 		}
-
 	}
 
 	// Process creates (updated records are recreated here)
