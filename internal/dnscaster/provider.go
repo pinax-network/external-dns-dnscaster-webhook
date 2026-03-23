@@ -26,6 +26,16 @@ type DnscasterProvider struct {
 	domainFilter *endpoint.DomainFilter
 }
 
+type hostKey struct {
+	FQDN   string
+	Type   string
+	Target string
+}
+
+type hostsMap = map[hostKey]Host
+
+type zonesMap = map[string]string
+
 // NewDnscasterProvider initializes a new DNSProvider, of the Dnscaster variety
 func NewDnscasterProvider(domainFilter *endpoint.DomainFilter, defaults *DnscasterDefaults, config *DnscasterConnectionConfig) (provider.Provider, error) {
 	// Create the Dnscaster API Client
@@ -88,95 +98,25 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 		return err
 	}
 
-	zonesMap := make(map[string]string, len(managedZones))
+	zonesMap := make(zonesMap, len(managedZones))
 	for _, zone := range managedZones {
 		zonesMap[zone.Domain] = zone.ID
 	}
 
-	type hostKey struct {
-		FQDN   string
-		Type   string
-		Target string
-	}
-	hostsMap := make(map[hostKey]Host)
+	hostsMap := make(hostsMap)
 
 	// Process deletions (records to update will be deleted and recreated later)
 	for _, record := range append(changes.UpdateOld, changes.Delete...) {
-		log.Debug("ApplyChanges - Delete", "record", record)
-
-		hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
-		host, ok := hostsMap[hk]
-
-		if !ok {
-			// Will need to add the zone's hosts to map
-			_, zone := p.trimHostnameFromFQDN(record)
-			hosts, err := p.client.ListHosts(ctx, zonesMap[zone])
-			if err != nil {
-				return err
-			}
-
-			for _, h := range hosts {
-				hk := hostKey{FQDN: h.FQDN, Type: h.DNSType, Target: h.Data}
-				hostsMap[hk] = h
-			}
-
-			// Set the host now that the map is populated
-			host = hostsMap[hk]
-		}
-
-		if err := p.client.DeleteHost(ctx, host.ID); err != nil {
+		if err := p.applyDelete(ctx, record, zonesMap, hostsMap); err != nil {
 			return err
-		}
-
-		// Deleting needs to happen after the host using it has been removed
-		if host.IPMonitorID != "" {
-			if err := p.client.DeleteMonitor(ctx, host.IPMonitorID); err != nil {
-				return err
-			}
 		}
 	}
 
 	// Process creates (updated records are recreated here)
 	for _, record := range append(changes.Create, changes.UpdateNew...) {
-		log.Debug("ApplyChanges - Create", "record", record)
-
-		host := p.hostsForEndpoint(record)
-		hostname, zone := p.trimHostnameFromFQDN(record)
-		host.Hostname = hostname
-		host.ZoneID = zonesMap[zone]
-
-		switch host.DNSType {
-		case "A", "AAAA":
-			uri, ok := record.GetProviderSpecificProperty(providerSpecificIPMonitorURI)
-			if ok {
-				treatRedirects, ok := record.GetProviderSpecificProperty(providerSpecificIPMonitorTreatRedirects)
-				if ok {
-					u := url.URL{Scheme: uri, Host: host.Data}
-					hash, err := genRandomHex()
-					if err != nil {
-						return err
-					}
-					monitor := Monitor{
-						Name:            record.DNSName + "-" + hash,
-						URI:             u.String(),
-						Hostname:        record.DNSName,
-						TreatRedirects:  treatRedirects,
-						NameserverSetID: nameserverSets[0].ID, // TODO: fallback to first NS_set if not defined
-					}
-					mon, err := p.client.CreateMonitor(ctx, monitor)
-					if err != nil {
-						return err
-					}
-					host.IPMonitorID = mon.ID
-				}
-			}
-		}
-
-		_, err := p.client.CreateHost(ctx, host)
-		if err != nil {
+		if err := p.applyCreate(ctx, record, zonesMap, nameserverSets); err != nil {
 			return err
 		}
-
 	}
 
 	return nil
@@ -185,6 +125,68 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 // GetDomainFilter returns the domain filter for the provider.
 func (p *DnscasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
+}
+
+func (p *DnscasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, nameserverSets []NameserverSet) error {
+	if len(record.Targets) == 0 {
+		log.Warn("Skipping record with no targets", "record", record)
+		return nil
+	}
+	log.Debug("applyCreate", "record", record)
+
+	host := p.hostsForEndpoint(record)
+	hostname, zone := p.trimHostnameFromFQDN(record)
+	host.Hostname = hostname
+	host.ZoneID = zonesMap[zone]
+
+	monitorID, err := p.createMonitorForEndpoint(ctx, record, host, nameserverSets)
+	if err != nil {
+		return err
+	}
+	host.IPMonitorID = monitorID
+
+	_, err = p.client.CreateHost(ctx, host)
+	return err
+}
+
+func (p *DnscasterProvider) applyDelete(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, hostsMap hostsMap) error {
+	if len(record.Targets) == 0 {
+		log.Warn("Skipping record with no targets", "record", record)
+		return nil
+	}
+
+	log.Debug("applyDelete", "record", record)
+
+	hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
+	host, ok := hostsMap[hk]
+	if !ok {
+		// Will need to add the zone's hosts to map
+		_, zone := p.trimHostnameFromFQDN(record)
+		hosts, err := p.client.ListHosts(ctx, zonesMap[zone])
+		if err != nil {
+			return err
+		}
+
+		for _, h := range hosts {
+			hk := hostKey{FQDN: h.FQDN, Type: h.DNSType, Target: h.Data}
+			hostsMap[hk] = h
+		}
+
+		// Set the host now that the map is populated
+		host = hostsMap[hk]
+	}
+
+	if err := p.client.DeleteHost(ctx, host.ID); err != nil {
+		return err
+	}
+
+	// Deleting needs to happen after the host using it has been removed
+	if host.IPMonitorID != "" {
+		if err := p.client.DeleteMonitor(ctx, host.IPMonitorID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *DnscasterProvider) filterManagedZones(ctx context.Context, zones []Zone) ([]Zone, error) {
@@ -238,6 +240,46 @@ func (p *DnscasterProvider) endpointFromHost(ctx context.Context, host Host) (*e
 	log.Debug("endpointFromHost", "endpoint", endpoint)
 
 	return endpoint, nil
+}
+
+func (p *DnscasterProvider) createMonitorForEndpoint(ctx context.Context, record *endpoint.Endpoint, host Host, nameserverSets []NameserverSet) (string, error) {
+	if len(nameserverSets) == 0 {
+		return "", fmt.Errorf("no nameserver sets available")
+	}
+
+	if host.DNSType != "A" && host.DNSType != "AAAA" {
+		return "", nil
+	}
+
+	uri, ok := record.GetProviderSpecificProperty(providerSpecificIPMonitorURI)
+	if !ok || uri == "" {
+		return "", nil
+	}
+
+	treatRedirects, _ := record.GetProviderSpecificProperty(providerSpecificIPMonitorTreatRedirects)
+	if !ok || treatRedirects == "" {
+		return "", nil
+	}
+
+	u := url.URL{Scheme: uri, Host: host.Data}
+
+	hash, err := genRandomHex()
+	if err != nil {
+		return "", err
+	}
+
+	monitor, err := p.client.CreateMonitor(ctx, Monitor{
+		Name:            record.DNSName + "-" + hash,
+		URI:             u.String(),
+		Hostname:        record.DNSName,
+		TreatRedirects:  treatRedirects,
+		NameserverSetID: nameserverSets[0].ID,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return monitor.ID, nil
 }
 
 func (p *DnscasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {
