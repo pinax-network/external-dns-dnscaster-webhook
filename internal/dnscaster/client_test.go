@@ -10,10 +10,10 @@ import (
 	"testing"
 )
 
-func testClient(rt http.RoundTripper) *DnscasterApiClient {
-	return &DnscasterApiClient{
-		DnscasterDefaults:         &DnscasterDefaults{DefaultTTL: 300},
-		DnscasterConnectionConfig: &DnscasterConnectionConfig{ApiKey: "test-api-key"},
+func testClient(rt http.RoundTripper) *DNScasterApiClient {
+	return &DNScasterApiClient{
+		DNScasterDefaults:         &DNScasterDefaults{DefaultTTL: 300},
+		DNScasterConnectionConfig: &DNScasterConnectionConfig{ApiKey: "test-api-key"},
 		Client:                    &http.Client{Transport: rt},
 	}
 }

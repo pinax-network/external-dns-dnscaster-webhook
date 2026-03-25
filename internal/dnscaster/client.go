@@ -27,26 +27,26 @@ const (
 	dnscasterNameserverSetsPath = "v1/nameserver_sets/"
 )
 
-type DnscasterDefaults struct {
+type DNScasterDefaults struct {
 	DefaultTTL     int64  `env:"DNSCASTER_DEFAULT_TTL" envDefault:"300"`
 	DefaultComment string `env:"DNSCASTER_DEFAULT_COMMENT" envDefault:""`
 }
 
-// DnscasterConnectionConfig holds the connection details for the API client
-type DnscasterConnectionConfig struct {
+// DNScasterConnectionConfig holds the connection details for the API client
+type DNScasterConnectionConfig struct {
 	ApiKey        string `env:"DNSCASTER_API_KEY,notEmpty"`
 	SkipTLSVerify bool   `env:"DNSCASTER_SKIP_TLS_VERIFY" envDefault:"false"`
 }
 
-// DnscasterApiClient encapsulates the client configuration and HTTP client
-type DnscasterApiClient struct {
-	*DnscasterDefaults
-	*DnscasterConnectionConfig
+// DNScasterApiClient encapsulates the client configuration and HTTP client
+type DNScasterApiClient struct {
+	*DNScasterDefaults
+	*DNScasterConnectionConfig
 	*http.Client
 }
 
-// NewDnscasterClient creates a new instance of DnscasterApiClient
-func NewDnscasterClient(config *DnscasterConnectionConfig, defaults *DnscasterDefaults) (*DnscasterApiClient, error) {
+// NewDNScasterClient creates a new instance of DnscasterApiClient
+func NewDNScasterClient(config *DNScasterConnectionConfig, defaults *DNScasterDefaults) (*DNScasterApiClient, error) {
 	log.Info("creating a new Dnscaster API Client")
 
 	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
@@ -55,9 +55,9 @@ func NewDnscasterClient(config *DnscasterConnectionConfig, defaults *DnscasterDe
 		return nil, err
 	}
 
-	client := &DnscasterApiClient{
-		DnscasterDefaults:         defaults,
-		DnscasterConnectionConfig: config,
+	client := &DNScasterApiClient{
+		DNScasterDefaults:         defaults,
+		DNScasterConnectionConfig: config,
 		Client: &http.Client{
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
@@ -71,7 +71,7 @@ func NewDnscasterClient(config *DnscasterConnectionConfig, defaults *DnscasterDe
 	return client, nil
 }
 
-func (c *DnscasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
+func (c *DNScasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 	var out ListResponse[Zone]
 
 	if err := c.do(ctx, http.MethodGet, dnscasterZonePath, nil, nil, &out); err != nil {
@@ -82,7 +82,7 @@ func (c *DnscasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 	return out.Collection, nil
 }
 
-func (c *DnscasterApiClient) GetZone(ctx context.Context, domain string) (Zone, error) {
+func (c *DNScasterApiClient) GetZone(ctx context.Context, domain string) (Zone, error) {
 	var out Zone
 
 	if err := c.do(ctx, http.MethodGet, dnscasterZonePath+domain, nil, nil, &out); err != nil {
@@ -93,7 +93,7 @@ func (c *DnscasterApiClient) GetZone(ctx context.Context, domain string) (Zone, 
 	return out, nil
 }
 
-func (c *DnscasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Host, error) {
+func (c *DNScasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Host, error) {
 	var out ListResponse[Host]
 
 	q := url.Values{}
@@ -107,7 +107,7 @@ func (c *DnscasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Ho
 	return out.Collection, nil
 }
 
-func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, error) {
+func (c *DNScasterApiClient) GetHost(ctx context.Context, hostID string) (Host, error) {
 	var out Host
 
 	if err := c.do(ctx, http.MethodGet, dnscasterHostPath+hostID, nil, nil, &out); err != nil {
@@ -118,7 +118,7 @@ func (c *DnscasterApiClient) GetHost(ctx context.Context, hostID string) (Host, 
 	return out, nil
 }
 
-func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
+func (c *DNScasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
 	var out Host
 
 	if err := c.do(ctx, http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: host}, &out); err != nil {
@@ -129,7 +129,7 @@ func (c *DnscasterApiClient) CreateHost(ctx context.Context, host Host) (Host, e
 	return out, nil
 }
 
-func (c *DnscasterApiClient) DeleteHost(ctx context.Context, hostID string) error {
+func (c *DNScasterApiClient) DeleteHost(ctx context.Context, hostID string) error {
 	if err := c.do(ctx, http.MethodDelete, dnscasterHostPath+hostID, nil, nil, nil); err != nil {
 		return fmt.Errorf("failed to delete host: %w", err)
 	}
@@ -137,7 +137,7 @@ func (c *DnscasterApiClient) DeleteHost(ctx context.Context, hostID string) erro
 	return nil
 }
 
-func (c *DnscasterApiClient) ListMonitors(ctx context.Context) ([]Monitor, error) {
+func (c *DNScasterApiClient) ListMonitors(ctx context.Context) ([]Monitor, error) {
 	var out ListResponse[Monitor]
 
 	if err := c.do(ctx, http.MethodGet, dnscasterMonitorPath, nil, nil, &out); err != nil {
@@ -148,7 +148,7 @@ func (c *DnscasterApiClient) ListMonitors(ctx context.Context) ([]Monitor, error
 	return out.Collection, nil
 }
 
-func (c *DnscasterApiClient) GetMonitor(ctx context.Context, monitorID string) (Monitor, error) {
+func (c *DNScasterApiClient) GetMonitor(ctx context.Context, monitorID string) (Monitor, error) {
 	var out Monitor
 
 	if err := c.do(ctx, http.MethodGet, dnscasterMonitorPath+monitorID, nil, nil, &out); err != nil {
@@ -159,7 +159,7 @@ func (c *DnscasterApiClient) GetMonitor(ctx context.Context, monitorID string) (
 	return out, nil
 }
 
-func (c *DnscasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error) {
+func (c *DNScasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error) {
 	var out Monitor
 
 	if err := c.do(ctx, http.MethodPost, dnscasterMonitorPath, nil, MonitorEnvelope{Monitor: monitor}, &out); err != nil {
@@ -170,7 +170,7 @@ func (c *DnscasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor)
 	return out, nil
 }
 
-func (c *DnscasterApiClient) DeleteMonitor(ctx context.Context, monitorID string) error {
+func (c *DNScasterApiClient) DeleteMonitor(ctx context.Context, monitorID string) error {
 	if err := c.do(ctx, http.MethodDelete, dnscasterMonitorPath+monitorID, nil, nil, nil); err != nil {
 		return fmt.Errorf("failed to delete monitor: %w", err)
 	}
@@ -179,7 +179,7 @@ func (c *DnscasterApiClient) DeleteMonitor(ctx context.Context, monitorID string
 	return nil
 }
 
-func (c *DnscasterApiClient) ListNameserverSets(ctx context.Context) ([]NameserverSet, error) {
+func (c *DNScasterApiClient) ListNameserverSets(ctx context.Context) ([]NameserverSet, error) {
 	var out ListResponse[NameserverSet]
 
 	if err := c.do(ctx, http.MethodGet, dnscasterNameserverSetsPath, nil, nil, &out); err != nil {
@@ -190,7 +190,7 @@ func (c *DnscasterApiClient) ListNameserverSets(ctx context.Context) ([]Nameserv
 	return out.Collection, nil
 }
 
-func (c *DnscasterApiClient) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
 	var bodyReader io.Reader
 	var err error
 

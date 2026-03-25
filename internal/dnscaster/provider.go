@@ -14,15 +14,15 @@ import (
 )
 
 const (
-	providerSpecificIPMonitorURI            = "webhook/dnscaster-ip-monitor-uri"
-	providerSpecificIPMonitorTreatRedirects = "webhook/dnscaster-ip-monitor-treat-redirects"
+	ProviderSpecificIPMonitorURI            = "webhook/dnscaster-ip-monitor-uri"
+	ProviderSpecificIPMonitorTreatRedirects = "webhook/dnscaster-ip-monitor-treat-redirects"
 )
 
-// DnscasterProvider is a helper class for working with dnscaster
-type DnscasterProvider struct {
+// DNScasterProvider is a helper class for working with dnscaster
+type DNScasterProvider struct {
 	provider.BaseProvider
 
-	client       *DnscasterApiClient
+	client       *DNScasterApiClient
 	domainFilter *endpoint.DomainFilter
 }
 
@@ -36,16 +36,16 @@ type hostsMap = map[hostKey]Host
 
 type zonesMap = map[string]string
 
-// NewDnscasterProvider initializes a new DNSProvider, of the Dnscaster variety
-func NewDnscasterProvider(domainFilter *endpoint.DomainFilter, defaults *DnscasterDefaults, config *DnscasterConnectionConfig) (provider.Provider, error) {
+// NewDNScasterProvider initializes a new DNSProvider, of the Dnscaster variety
+func NewDNScasterProvider(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, config *DNScasterConnectionConfig) (provider.Provider, error) {
 	// Create the Dnscaster API Client
-	client, err := NewDnscasterClient(config, defaults)
+	client, err := NewDNScasterClient(config, defaults)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the Dnscaster client: %w", err)
 	}
 
 	// If the client connects properly, create the DNS Provider
-	p := &DnscasterProvider{
+	p := &DNScasterProvider{
 		client:       client,
 		domainFilter: domainFilter,
 	}
@@ -53,7 +53,14 @@ func NewDnscasterProvider(domainFilter *endpoint.DomainFilter, defaults *Dnscast
 	return p, nil
 }
 
-func (p *DnscasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
+func NewDNScasterProviderWithClient(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, client *DNScasterApiClient) (provider.Provider, error) {
+	return &DNScasterProvider{
+		domainFilter: domainFilter,
+		client:       client,
+	}, nil
+}
+
+func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
 	zones, err := p.client.ListZones(ctx)
 	if err != nil {
 		return nil, err
@@ -82,7 +89,7 @@ func (p *DnscasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 	return records, nil
 }
 
-func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
+func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
 	nameserverSets, err := p.client.ListNameserverSets(ctx)
 	if err != nil {
 		return err
@@ -123,14 +130,13 @@ func (p *DnscasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 }
 
 // GetDomainFilter returns the domain filter for the provider.
-func (p *DnscasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
+func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
 }
 
-func (p *DnscasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, nameserverSets []NameserverSet) error {
+func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, nameserverSets []NameserverSet) error {
 	if len(record.Targets) == 0 {
-		log.Warn("Skipping record with no targets", "record", record)
-		return nil
+		return fmt.Errorf("no target set on record: %v", record)
 	}
 	log.Debug("applyCreate", "record", record)
 
@@ -149,12 +155,10 @@ func (p *DnscasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	return err
 }
 
-func (p *DnscasterProvider) applyDelete(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, hostsMap hostsMap) error {
+func (p *DNScasterProvider) applyDelete(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, hostsMap hostsMap) error {
 	if len(record.Targets) == 0 {
-		log.Warn("Skipping record with no targets", "record", record)
-		return nil
+		return fmt.Errorf("no target set on record: %v", record)
 	}
-
 	log.Debug("applyDelete", "record", record)
 
 	hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
@@ -189,7 +193,7 @@ func (p *DnscasterProvider) applyDelete(ctx context.Context, record *endpoint.En
 	return nil
 }
 
-func (p *DnscasterProvider) filterManagedZones(ctx context.Context, zones []Zone) ([]Zone, error) {
+func (p *DNScasterProvider) filterManagedZones(ctx context.Context, zones []Zone) ([]Zone, error) {
 	var filtered []Zone
 
 	for _, zone := range zones {
@@ -204,7 +208,7 @@ func (p *DnscasterProvider) filterManagedZones(ctx context.Context, zones []Zone
 	return filtered, nil
 }
 
-func (p *DnscasterProvider) hostsForEndpoint(record *endpoint.Endpoint) Host {
+func (p *DNScasterProvider) hostsForEndpoint(record *endpoint.Endpoint) Host {
 	ttl := p.defaultTTL(record)
 
 	if len(record.Targets) == 0 {
@@ -220,7 +224,7 @@ func (p *DnscasterProvider) hostsForEndpoint(record *endpoint.Endpoint) Host {
 	}
 }
 
-func (p *DnscasterProvider) endpointFromHost(ctx context.Context, host Host) (*endpoint.Endpoint, error) {
+func (p *DNScasterProvider) endpointFromHost(ctx context.Context, host Host) (*endpoint.Endpoint, error) {
 	endpoint := endpoint.NewEndpointWithTTL(host.FQDN, host.DNSType, endpoint.TTL(host.TTL), host.Data)
 
 	if host.IPMonitorID != "" {
@@ -234,15 +238,15 @@ func (p *DnscasterProvider) endpointFromHost(ctx context.Context, host Host) (*e
 			return nil, err
 		}
 
-		endpoint.SetProviderSpecificProperty(providerSpecificIPMonitorURI, u.Scheme)
-		endpoint.SetProviderSpecificProperty(providerSpecificIPMonitorTreatRedirects, monitor.TreatRedirects)
+		endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorURI, u.Scheme)
+		endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorTreatRedirects, monitor.TreatRedirects)
 	}
 	log.Debug("endpointFromHost", "endpoint", endpoint)
 
 	return endpoint, nil
 }
 
-func (p *DnscasterProvider) createMonitorForEndpoint(ctx context.Context, record *endpoint.Endpoint, host Host, nameserverSets []NameserverSet) (string, error) {
+func (p *DNScasterProvider) createMonitorForEndpoint(ctx context.Context, record *endpoint.Endpoint, host Host, nameserverSets []NameserverSet) (string, error) {
 	if len(nameserverSets) == 0 {
 		return "", fmt.Errorf("no nameserver sets available")
 	}
@@ -251,12 +255,12 @@ func (p *DnscasterProvider) createMonitorForEndpoint(ctx context.Context, record
 		return "", nil
 	}
 
-	uri, ok := record.GetProviderSpecificProperty(providerSpecificIPMonitorURI)
+	uri, ok := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorURI)
 	if !ok || uri == "" {
 		return "", nil
 	}
 
-	treatRedirects, _ := record.GetProviderSpecificProperty(providerSpecificIPMonitorTreatRedirects)
+	treatRedirects, _ := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorTreatRedirects)
 	if !ok || treatRedirects == "" {
 		return "", nil
 	}
@@ -282,14 +286,14 @@ func (p *DnscasterProvider) createMonitorForEndpoint(ctx context.Context, record
 	return monitor.ID, nil
 }
 
-func (p *DnscasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {
+func (p *DNScasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {
 	if record.RecordTTL.IsConfigured() {
 		return int64(record.RecordTTL)
 	}
 	return p.client.DefaultTTL
 }
 
-func (p *DnscasterProvider) trimHostnameFromFQDN(record *endpoint.Endpoint) (string, string) {
+func (p *DNScasterProvider) trimHostnameFromFQDN(record *endpoint.Endpoint) (string, string) {
 	var bestFilter string
 
 	for _, filter := range p.domainFilter.Filters {
