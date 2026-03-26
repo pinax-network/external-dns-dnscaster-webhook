@@ -9,9 +9,9 @@ import (
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/provider"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/configuration"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/dnscaster"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 func Init(config configuration.Config) (provider.Provider, error) {

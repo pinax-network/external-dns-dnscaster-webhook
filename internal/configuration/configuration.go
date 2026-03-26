@@ -5,7 +5,7 @@ import (
 
 	env "github.com/caarlos0/env/v11"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 type Config struct {

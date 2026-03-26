@@ -1,5 +1,5 @@
 FROM docker.io/library/golang:1.26-alpine AS builder
-ARG PKG=github.com/gcleroux/external-dns-dnscaster-webhook
+ARG PKG=github.com/pinax-network/external-dns-dnscaster-webhook
 ARG VERSION=dev
 ARG REVISION=dev
 

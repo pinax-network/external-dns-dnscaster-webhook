@@ -3,11 +3,11 @@ package main
 import (
 	"fmt"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/configuration"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/dnsprovider"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/server"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/pkg/webhook"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnsprovider"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/server"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/webhook"
 )
 
 const banner = `

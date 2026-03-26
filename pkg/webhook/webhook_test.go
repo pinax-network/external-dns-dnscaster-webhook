@@ -11,11 +11,11 @@ import (
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
 
-	ilog "github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 func init() {
-	ilog.Init()
+	log.Init()
 }
 
 type fakeProvider struct {

@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/net/publicsuffix"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 // Note: Methods would be a good fit to be rewritten with generics in mind now that
@@ -28,14 +28,14 @@ const (
 )
 
 type DNScasterDefaults struct {
-	DefaultTTL     int64  `env:"DNSCASTER_DEFAULT_TTL" envDefault:"300"`
-	DefaultComment string `env:"DNSCASTER_DEFAULT_COMMENT" envDefault:""`
+	DefaultTTL int64 `env:"DNSCASTER_DEFAULT_TTL" envDefault:"300"`
 }
 
 // DNScasterConnectionConfig holds the connection details for the API client
 type DNScasterConnectionConfig struct {
-	ApiKey        string `env:"DNSCASTER_API_KEY,notEmpty"`
-	SkipTLSVerify bool   `env:"DNSCASTER_SKIP_TLS_VERIFY" envDefault:"false"`
+	ApiKey          string `env:"DNSCASTER_API_KEY,notEmpty"`
+	NameserverSetID string `env:"DNSCASTER_NAMESERVER_SET_ID,notEmpty"`
+	SkipTLSVerify   bool   `env:"DNSCASTER_SKIP_TLS_VERIFY" envDefault:"false"`
 }
 
 // DNScasterApiClient encapsulates the client configuration and HTTP client
@@ -82,17 +82,6 @@ func (c *DNScasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 	return out.Collection, nil
 }
 
-func (c *DNScasterApiClient) GetZone(ctx context.Context, domain string) (Zone, error) {
-	var out Zone
-
-	if err := c.do(ctx, http.MethodGet, dnscasterZonePath+domain, nil, nil, &out); err != nil {
-		return out, err
-	}
-
-	log.Debug("GetZoneByDomain", "zone", out)
-	return out, nil
-}
-
 func (c *DNScasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Host, error) {
 	var out ListResponse[Host]
 
@@ -105,17 +94,6 @@ func (c *DNScasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Ho
 
 	log.Debug("ListHosts", "count", len(out.Collection))
 	return out.Collection, nil
-}
-
-func (c *DNScasterApiClient) GetHost(ctx context.Context, hostID string) (Host, error) {
-	var out Host
-
-	if err := c.do(ctx, http.MethodGet, dnscasterHostPath+hostID, nil, nil, &out); err != nil {
-		return out, fmt.Errorf("failed to get host: %w", err)
-	}
-
-	log.Debug("GetHost", "host", out)
-	return out, nil
 }
 
 func (c *DNScasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
@@ -135,17 +113,6 @@ func (c *DNScasterApiClient) DeleteHost(ctx context.Context, hostID string) erro
 	}
 	log.Debug("DeleteHost", "host.id", hostID)
 	return nil
-}
-
-func (c *DNScasterApiClient) ListMonitors(ctx context.Context) ([]Monitor, error) {
-	var out ListResponse[Monitor]
-
-	if err := c.do(ctx, http.MethodGet, dnscasterMonitorPath, nil, nil, &out); err != nil {
-		return nil, fmt.Errorf("failed to list monitors: %w", err)
-	}
-
-	log.Debug("ListMonitors", "count", len(out.Collection))
-	return out.Collection, nil
 }
 
 func (c *DNScasterApiClient) GetMonitor(ctx context.Context, monitorID string) (Monitor, error) {
@@ -177,17 +144,6 @@ func (c *DNScasterApiClient) DeleteMonitor(ctx context.Context, monitorID string
 
 	log.Debug("DeleteMonitor", "monitor.id", monitorID)
 	return nil
-}
-
-func (c *DNScasterApiClient) ListNameserverSets(ctx context.Context) ([]NameserverSet, error) {
-	var out ListResponse[NameserverSet]
-
-	if err := c.do(ctx, http.MethodGet, dnscasterNameserverSetsPath, nil, nil, &out); err != nil {
-		return nil, fmt.Errorf("failed to list nameserver_sets: %w", err)
-	}
-
-	log.Debug("ListNameserverSets", "count", len(out.Collection))
-	return out.Collection, nil
 }
 
 func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {

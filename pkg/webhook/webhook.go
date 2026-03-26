@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/external-dns/plan"
 	externaldnsprovider "sigs.k8s.io/external-dns/provider"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 const (

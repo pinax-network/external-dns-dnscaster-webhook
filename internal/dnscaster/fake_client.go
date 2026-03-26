@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -23,10 +23,9 @@ type FakeDNScasterClient struct {
 	*http.Client
 	mu sync.Mutex
 
-	NameserverSets []NameserverSet
-	Zones          []Zone
-	Hosts          map[string][]Host  // key: zone_id
-	Monitors       map[string]Monitor // key: mon_id
+	Zones    []Zone
+	Hosts    map[string][]Host  // key: zone_id
+	Monitors map[string]Monitor // key: mon_id
 
 	// Tracking IDs
 	nextHostID    int
@@ -66,17 +65,6 @@ func (f *FakeDNScasterClient) HTTPClient() *http.Client {
 	}
 }
 
-func (f *FakeDNScasterClient) WithNameserverSet(id, name string) *FakeDNScasterClient {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.NameserverSets = append(f.NameserverSets, NameserverSet{
-		ID:   id,
-		Name: name,
-	})
-	return f
-}
-
 func (f *FakeDNScasterClient) WithZone(id, domain string) *FakeDNScasterClient {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -109,12 +97,6 @@ func (f *FakeDNScasterClient) roundTrip(req *http.Request) (*http.Response, erro
 	defer f.mu.Unlock()
 
 	switch {
-
-	// List Nameserver Sets
-	case req.Method == http.MethodGet && req.URL.Path == "/"+dnscasterNameserverSetsPath:
-		return f.json(http.StatusOK, map[string]any{
-			"collection": f.NameserverSets,
-		})
 
 	// List Zones
 	case req.Method == http.MethodGet && req.URL.Path == "/"+dnscasterZonePath:

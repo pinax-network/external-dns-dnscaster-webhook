@@ -10,12 +10,13 @@ import (
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 const (
-	ProviderSpecificIPMonitorURI            = "webhook/dnscaster-ip-monitor-uri"
-	ProviderSpecificIPMonitorTreatRedirects = "webhook/dnscaster-ip-monitor-treat-redirects"
+	ProviderSpecificIPMonitorURIScheme               = "webhook/dnscaster-ip-monitor-uri-scheme"
+	ProviderSpecificIPMonitorURIPath                 = "webhook/dnscaster-ip-monitor-uri-path"
+	ProviderSpecificIPMonitorTreatRedirectsAsOffline = "webhook/dnscaster-ip-monitor-treat-redirects-as-offline"
 )
 
 // DNScasterProvider is a helper class for working with dnscaster
@@ -90,11 +91,6 @@ func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 }
 
 func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
-	nameserverSets, err := p.client.ListNameserverSets(ctx)
-	if err != nil {
-		return err
-	}
-
 	zones, err := p.client.ListZones(ctx)
 	if err != nil {
 		return err
@@ -121,7 +117,7 @@ func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 
 	// Process creates (updated records are recreated here)
 	for _, record := range append(changes.Create, changes.UpdateNew...) {
-		if err := p.applyCreate(ctx, record, zonesMap, nameserverSets); err != nil {
+		if err := p.applyCreate(ctx, record, zonesMap); err != nil {
 			return err
 		}
 	}
@@ -134,7 +130,7 @@ func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
 }
 
-func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, nameserverSets []NameserverSet) error {
+func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap) error {
 	if len(record.Targets) == 0 {
 		return fmt.Errorf("no target set on record: %v", record)
 	}
@@ -145,7 +141,7 @@ func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	host.Hostname = hostname
 	host.ZoneID = zonesMap[zone]
 
-	monitorID, err := p.createMonitorForEndpoint(ctx, record, host, nameserverSets)
+	monitorID, err := p.createMonitorForEndpoint(ctx, record, host)
 	if err != nil {
 		return err
 	}
@@ -237,35 +233,33 @@ func (p *DNScasterProvider) endpointFromHost(ctx context.Context, host Host) (*e
 		if err != nil {
 			return nil, err
 		}
+		endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorURIScheme, u.Scheme)
 
-		endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorURI, u.Scheme)
-		endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorTreatRedirects, monitor.TreatRedirects)
+		if u.Path != "" {
+			endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorURIPath, u.Path)
+		}
+
+		if monitor.TreatRedirects == "offline" {
+			endpoint.SetProviderSpecificProperty(ProviderSpecificIPMonitorTreatRedirectsAsOffline, "true")
+		}
+
 	}
 	log.Debug("endpointFromHost", "endpoint", endpoint)
 
 	return endpoint, nil
 }
 
-func (p *DNScasterProvider) createMonitorForEndpoint(ctx context.Context, record *endpoint.Endpoint, host Host, nameserverSets []NameserverSet) (string, error) {
-	if len(nameserverSets) == 0 {
-		return "", fmt.Errorf("no nameserver sets available")
-	}
-
+func (p *DNScasterProvider) createMonitorForEndpoint(ctx context.Context, record *endpoint.Endpoint, host Host) (string, error) {
 	if host.DNSType != "A" && host.DNSType != "AAAA" {
 		return "", nil
 	}
 
-	uri, ok := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorURI)
-	if !ok || uri == "" {
+	uriScheme, uriPath, treatRedirects, ok := isValidProviderSpecificAnnotations(record)
+	if !ok {
 		return "", nil
 	}
 
-	treatRedirects, _ := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorTreatRedirects)
-	if !ok || treatRedirects == "" {
-		return "", nil
-	}
-
-	u := url.URL{Scheme: uri, Host: host.Data}
+	u := url.URL{Scheme: uriScheme, Host: host.Data, Path: uriPath}
 
 	hash, err := genRandomHex()
 	if err != nil {
@@ -277,7 +271,7 @@ func (p *DNScasterProvider) createMonitorForEndpoint(ctx context.Context, record
 		URI:             u.String(),
 		Hostname:        record.DNSName,
 		TreatRedirects:  treatRedirects,
-		NameserverSetID: nameserverSets[0].ID,
+		NameserverSetID: p.client.NameserverSetID,
 	})
 	if err != nil {
 		return "", err
@@ -334,4 +328,34 @@ func (p *DNScasterProvider) trimHostnameFromFQDN(record *endpoint.Endpoint) (str
 		hostname := strings.TrimSuffix(record.DNSName, "."+bestFilter)
 		return hostname, bestFilter
 	}
+}
+
+func isValidProviderSpecificAnnotations(record *endpoint.Endpoint) (string, string, string, bool) {
+	uriScheme, ok := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorURIScheme)
+	if !ok {
+		return "", "", "", false
+	}
+	switch uriScheme {
+	case "ping", "http", "https", "tcp":
+	default:
+		log.Warn("invalid uriScheme annotation value", ProviderSpecificIPMonitorURIScheme, uriScheme)
+		return "", "", "", false
+	}
+
+	uriPath, ok := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorURIPath)
+	if ok && uriPath == "" {
+		log.Warn("invalid uriPath annotation value", ProviderSpecificIPMonitorURIPath, uriPath)
+		return "", "", "", false
+	}
+
+	treatRedirects, ok := record.GetProviderSpecificProperty(ProviderSpecificIPMonitorTreatRedirectsAsOffline)
+	if ok {
+		if treatRedirects != "true" {
+			log.Warn("invalid treatRedirects annotation value", ProviderSpecificIPMonitorTreatRedirectsAsOffline, treatRedirects)
+			return "", "", "", false
+		}
+		treatRedirects = "offline"
+	}
+
+	return uriScheme, uriPath, treatRedirects, true
 }

@@ -13,9 +13,9 @@ import (
 	chi "github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/configuration"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/pkg/webhook"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/webhook"
 )
 
 func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {

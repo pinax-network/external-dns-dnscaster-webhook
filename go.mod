@@ -1,4 +1,4 @@
-module github.com/gcleroux/external-dns-dnscaster-webhook
+module github.com/pinax-network/external-dns-dnscaster-webhook
 
 go 1.25.5
 

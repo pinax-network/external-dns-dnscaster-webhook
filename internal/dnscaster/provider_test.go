@@ -2,28 +2,20 @@ package dnscaster_test
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
 
-	env "github.com/caarlos0/env/v11"
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/configuration"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/dnscaster"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/dnsprovider"
-	"github.com/gcleroux/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnsprovider"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
 func init() {
-	os.Setenv("DOMAIN_FILTER", "example.com")
-	os.Setenv("DNSCASTER_API_KEY", "k")
-	os.Setenv("DNSCASTER_DEFAULT_TTL", "600")
-	os.Setenv("LOG_LEVEL", "error")
-
 	log.Init()
 }
 
@@ -33,7 +25,6 @@ func TestDefaultTTLUsesRecordValueWhenConfigured(t *testing.T) {
 	p, fake := newTestProvider(t)
 
 	fake.
-		WithNameserverSet("ns-1", "default").
 		WithZone("z-1", "example.com")
 
 	fake.OnCreateHost = func(host dnscaster.Host) error {
@@ -60,17 +51,11 @@ func TestDefaultTTLFallsBackToProviderDefault(t *testing.T) {
 	p, fake := newTestProvider(t)
 
 	fake.
-		WithNameserverSet("ns-1", "default").
 		WithZone("z-1", "example.com")
 
 	fake.OnCreateHost = func(host dnscaster.Host) error {
-		ttl, err := strconv.ParseInt(os.Getenv("DNSCASTER_DEFAULT_TTL"), 10, 64)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		if host.TTL != ttl {
-			t.Fatalf("expected configured TTL: %d, got: %d", ttl, host.TTL)
+		if host.TTL != 600 {
+			t.Fatalf("expected configured TTL: 600, got: %d", host.TTL)
 		}
 		return nil
 	}
@@ -92,7 +77,6 @@ func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
 	p, fake := newTestProvider(t)
 
 	fake.
-		WithNameserverSet("ns-1", "default").
 		WithZone("z-1", "example.com")
 
 	fake.OnCreateHost = func(host dnscaster.Host) error {
@@ -125,28 +109,9 @@ func TestTrimHostnameFromFQDN(t *testing.T) {
 		config := configuration.Init()
 		config.DomainFilter = []string{"example.com", ".deep.example.com", "exact.example.net"}
 
-		connConfig := &dnscaster.DNScasterConnectionConfig{}
-		if err := env.Parse(connConfig); err != nil {
-			t.Fatalf("reading dnscaster connection config failed: %v", err)
-		}
-
-		defaults := &dnscaster.DNScasterDefaults{}
-		if err := env.Parse(defaults); err != nil {
-			t.Fatalf("reading dnscaster defaults failed: %v", err)
-		}
-
-		client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
-		if err != nil {
-			t.Fatalf("creating fake dnscaster client failed: %v", err)
-		}
-
-		p, err := dnsprovider.InitWithClient(config, client)
-		if err != nil {
-			t.Fatalf("failed to init provider: %v", err)
-		}
+		p, fake := newTestProviderWithConfig(t, config, baseConnConfig(), baseDefaults())
 
 		fake.
-			WithNameserverSet("ns-1", "default").
 			WithZone("z-1", "example.com").
 			WithZone("z-2", "deep.example.com").
 			WithZone("z-3", "exact.example.net")
@@ -264,28 +229,9 @@ func TestProviderWithoutDomainFilter(t *testing.T) {
 	config := configuration.Init()
 	config.DomainFilter = []string{}
 
-	connConfig := &dnscaster.DNScasterConnectionConfig{}
-	if err := env.Parse(connConfig); err != nil {
-		t.Fatalf("reading dnscaster connection config failed: %v", err)
-	}
-
-	defaults := &dnscaster.DNScasterDefaults{}
-	if err := env.Parse(defaults); err != nil {
-		t.Fatalf("reading dnscaster defaults failed: %v", err)
-	}
-
-	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
-	if err != nil {
-		t.Fatalf("creating fake dnscaster client failed: %v", err)
-	}
-
-	p, err := dnsprovider.InitWithClient(config, client)
-	if err != nil {
-		t.Fatalf("failed to init provider: %v", err)
-	}
+	p, fake := newTestProviderWithConfig(t, config, baseConnConfig(), baseDefaults())
 
 	fake.
-		WithNameserverSet("ns-1", "default").
 		WithZone("z-1", "api.example.com").
 		WithZone("z-2", "api.other.com")
 
@@ -346,10 +292,9 @@ func TestProviderRecords(t *testing.T) {
 		p, fake := newTestProvider(t)
 
 		fake.
-			WithNameserverSet("ns-1", "default").
 			WithZone("z-1", "example.com").
 			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1", IPMonitorID: "m-1", Data: "1.2.3.4", Hostname: "api", FQDN: "api.example.com"}).
-			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "ping://1.2.3.4", TreatRedirects: "offline"})
+			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "https://1.2.3.4/health", TreatRedirects: "offline"})
 
 		records, err := p.Records(context.Background())
 		if err != nil {
@@ -359,13 +304,51 @@ func TestProviderRecords(t *testing.T) {
 			t.Fatalf("expected 1 records, got: %d", len(records))
 		}
 
-		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI)
-		if uri != "ping" {
-			t.Fatalf("expected provider annotation %s=ping, got: %s", dnscaster.ProviderSpecificIPMonitorURI, uri)
+		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme)
+		if uri != "https" {
+			t.Fatalf("expected provider annotation %s=https, got: %s", dnscaster.ProviderSpecificIPMonitorURIScheme, uri)
 		}
-		redirects, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects)
-		if redirects != "offline" {
-			t.Fatalf("expected provider annotation %s=offline, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirects, redirects)
+
+		uriPath, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIPath)
+		if uriPath != "/health" {
+			t.Fatalf("expected provider annotation %s=/health, got: %s", dnscaster.ProviderSpecificIPMonitorURIPath, uriPath)
+		}
+
+		redirects, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline)
+		if redirects != "true" {
+			t.Fatalf("expected provider annotation %s=true, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline, redirects)
+		}
+	})
+
+	t.Run("should return records with default provider annotations", func(t *testing.T) {
+		p, fake := newTestProvider(t)
+
+		fake.
+			WithZone("z-1", "example.com").
+			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1", IPMonitorID: "m-1", Data: "1.2.3.4", Hostname: "api", FQDN: "api.example.com"}).
+			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "ping://1.2.3.4", TreatRedirects: "online"})
+
+		records, err := p.Records(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error, got: %v", err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("expected 1 records, got: %d", len(records))
+		}
+
+		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme)
+		if uri != "ping" {
+			t.Fatalf("expected provider annotation %s=ping, got: %s", dnscaster.ProviderSpecificIPMonitorURIScheme, uri)
+		}
+
+		uriPath, ok := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIPath)
+		if ok {
+			t.Fatalf("unexpected provider annotation %s, got: %s", dnscaster.ProviderSpecificIPMonitorURIPath, uriPath)
+		}
+
+		redirects, ok := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline)
+		if ok {
+			t.Fatalf("unexpected provider annotation %s, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline, redirects)
 		}
 	})
 
@@ -410,7 +393,6 @@ func TestProviderApplyChanges(t *testing.T) {
 	p, fake := newTestProvider(t)
 
 	fake.
-		WithNameserverSet("ns-1", "default").
 		WithZone("z-1", "example.com").
 		WithHost(dnscaster.Host{
 			ID:          "h-old",
@@ -448,8 +430,8 @@ func TestProviderApplyChanges(t *testing.T) {
 		if req.URI != "https://5.6.7.8" {
 			t.Fatalf("expected uri=https://5.6.7.8, got %q", req.URI)
 		}
-		if req.TreatRedirects != "online" {
-			t.Fatalf("expected treat_redirects=online, got %q", req.TreatRedirects)
+		if req.TreatRedirects != "" {
+			t.Fatalf("expected treat_redirects='', got %q", req.TreatRedirects)
 		}
 		return nil
 	}
@@ -464,8 +446,7 @@ func TestProviderApplyChanges(t *testing.T) {
 		t.Parallel()
 
 		create := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects, "online")
+		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
 
 		changes := &plan.Changes{
 			Delete: []*endpoint.Endpoint{
@@ -518,7 +499,6 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 	p, fake := newTestProvider(t)
 
 	fake.
-		WithNameserverSet("ns-1", "default").
 		WithZone("z-1", "example.com")
 
 	fake.OnCreateMonitor = func(mon dnscaster.Monitor) error {
@@ -540,8 +520,7 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 
 	t.Run("should not create a monitor for unsupported types", func(t *testing.T) {
 		create := endpoint.NewEndpoint("app.example.com", "CNAME", "target.example.com")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects, "online")
+		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
 
 		changes := &plan.Changes{
 			Create: []*endpoint.Endpoint{create},
@@ -552,46 +531,28 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 		}
 	})
 
-	t.Run("should not create a monitor with missing annotation", func(t *testing.T) {
-		create := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-
+	t.Run("should not create a monitor for bad annotation values", func(t *testing.T) {
 		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{create},
+			Create: []*endpoint.Endpoint{
+				func() *endpoint.Endpoint {
+					e := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
+					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIPath, "")
+					return e
+				}(),
+				func() *endpoint.Endpoint {
+					e := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
+					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline, "false")
+					return e
+				}(),
+			},
 		}
 
 		if err := p.ApplyChanges(context.Background(), changes); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
-
-	t.Run("should return error when no nameserver set", func(t *testing.T) {
-		create := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{create},
-		}
-
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestCreateEndpointReturnsErrorWhenNoNameserverSets(t *testing.T) {
-	t.Parallel()
-
-	p, _ := newTestProvider(t)
-
-	changes := &plan.Changes{
-		Create: []*endpoint.Endpoint{endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")},
-	}
-
-	err := p.ApplyChanges(context.Background(), changes)
-	if err == nil || !strings.Contains(err.Error(), "no nameserver sets available") {
-		t.Fatalf("expected no nameserver sets error, got: %v", err)
-	}
 }
 
 func TestRecordsReturnsErrorWhenMonitorDoesNotExist(t *testing.T) {
@@ -614,16 +575,9 @@ func TestRecordsReturnsErrorWhenMonitorDoesNotExist(t *testing.T) {
 func newTestProvider(t *testing.T) (provider.Provider, *dnscaster.FakeDNScasterClient) {
 	t.Helper()
 
-	config := configuration.Init()
-	connConfig := &dnscaster.DNScasterConnectionConfig{}
-	if err := env.Parse(connConfig); err != nil {
-		t.Fatalf("reading dnscaster connection config failed: %v", err)
-	}
-
-	defaults := &dnscaster.DNScasterDefaults{}
-	if err := env.Parse(defaults); err != nil {
-		t.Fatalf("reading dnscaster defaults failed: %v", err)
-	}
+	config := baseConfig()
+	connConfig := baseConnConfig()
+	defaults := baseDefaults()
 
 	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
 	if err != nil {
@@ -636,4 +590,44 @@ func newTestProvider(t *testing.T) (provider.Provider, *dnscaster.FakeDNScasterC
 	}
 
 	return p, fake
+}
+
+func newTestProviderWithConfig(
+	t *testing.T,
+	config configuration.Config,
+	connConfig *dnscaster.DNScasterConnectionConfig,
+	defaults *dnscaster.DNScasterDefaults,
+) (provider.Provider, *dnscaster.FakeDNScasterClient) {
+	t.Helper()
+
+	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
+	if err != nil {
+		t.Fatalf("creating fake dnscaster client failed: %v", err)
+	}
+
+	p, err := dnsprovider.InitWithClient(config, client)
+	if err != nil {
+		t.Fatalf("failed to init provider: %v", err)
+	}
+
+	return p, fake
+}
+
+func baseConfig() configuration.Config {
+	cfg := configuration.Init()
+	cfg.DomainFilter = []string{"example.com"}
+	return cfg
+}
+
+func baseConnConfig() *dnscaster.DNScasterConnectionConfig {
+	return &dnscaster.DNScasterConnectionConfig{
+		ApiKey:          "k",
+		NameserverSetID: "ns-1",
+	}
+}
+
+func baseDefaults() *dnscaster.DNScasterDefaults {
+	return &dnscaster.DNScasterDefaults{
+		DefaultTTL: 600,
+	}
 }
