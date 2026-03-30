@@ -28,11 +28,11 @@ provider:
         value: text
       - name: LOG_LEVEL
         value: debug
-      - name: DNSCASTER_SKIP_TLS_VERIFY
-        value: "false"
       - name: DOMAIN_FILTER
         value: "dnstest.pinax.network"
 
+      - name: DNSCASTER_NAMESERVER_SET_ID
+        value: nst_0wd1fQSt2uYYNP4j3YLCZX
       - name: DNSCASTER_API_KEY
         valueFrom:
           secretKeyRef:
