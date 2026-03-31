@@ -23,8 +23,7 @@ to your DNScaster service provider.
 - Targeting multiple Nameserver Set is not supported. A single NameserverSet ID
   must be given through an ENV var at runtime.
 
-- IP Monitors can only monitor against their own target. For this reason, IP
-  monitors are only supported for A/AAAA records.
+- IP Monitors are only supported for A/AAAA records.
 
 ## Configuration Options
 
