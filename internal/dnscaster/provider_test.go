@@ -11,7 +11,6 @@ import (
 
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
-	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnsprovider"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
@@ -293,7 +292,18 @@ func TestProviderRecords(t *testing.T) {
 
 		fake.
 			WithZone("z-1", "example.com").
-			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1", IPMonitorID: "m-1", Data: "1.2.3.4", Hostname: "api", FQDN: "api.example.com"}).
+			WithHost(dnscaster.Host{
+				ZoneID:      "z-1",
+				ID:          "h-1",
+				IPMonitorID: "m-1",
+				Data:        "1.2.3.4",
+				Hostname:    "api",
+				FQDN:        "api.example.com",
+				Properties: map[string]string{
+					dnscaster.ProviderSpecificIPMonitorURI:            "https:/health",
+					dnscaster.ProviderSpecificIPMonitorTreatRedirects: "offline",
+				},
+			}).
 			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "https://1.2.3.4/health", TreatRedirects: "offline"})
 
 		records, err := p.Records(context.Background())
@@ -304,19 +314,14 @@ func TestProviderRecords(t *testing.T) {
 			t.Fatalf("expected 1 records, got: %d", len(records))
 		}
 
-		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme)
-		if uri != "https" {
-			t.Fatalf("expected provider annotation %s=https, got: %s", dnscaster.ProviderSpecificIPMonitorURIScheme, uri)
+		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI)
+		if uri != "https:/health" {
+			t.Fatalf("expected provider annotation %s=https, got: %s", dnscaster.ProviderSpecificIPMonitorURI, uri)
 		}
 
-		uriPath, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIPath)
-		if uriPath != "/health" {
-			t.Fatalf("expected provider annotation %s=/health, got: %s", dnscaster.ProviderSpecificIPMonitorURIPath, uriPath)
-		}
-
-		redirects, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline)
-		if redirects != "true" {
-			t.Fatalf("expected provider annotation %s=true, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline, redirects)
+		redirects, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects)
+		if redirects != "offline" {
+			t.Fatalf("expected provider annotation %s=offline, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirects, redirects)
 		}
 	})
 
@@ -325,7 +330,17 @@ func TestProviderRecords(t *testing.T) {
 
 		fake.
 			WithZone("z-1", "example.com").
-			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1", IPMonitorID: "m-1", Data: "1.2.3.4", Hostname: "api", FQDN: "api.example.com"}).
+			WithHost(dnscaster.Host{
+				ZoneID:      "z-1",
+				ID:          "h-1",
+				IPMonitorID: "m-1",
+				Data:        "1.2.3.4",
+				Hostname:    "api",
+				FQDN:        "api.example.com",
+				Properties: map[string]string{
+					dnscaster.ProviderSpecificIPMonitorURI: "ping",
+				},
+			}).
 			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "ping://1.2.3.4", TreatRedirects: "online"})
 
 		records, err := p.Records(context.Background())
@@ -336,19 +351,14 @@ func TestProviderRecords(t *testing.T) {
 			t.Fatalf("expected 1 records, got: %d", len(records))
 		}
 
-		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme)
+		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI)
 		if uri != "ping" {
-			t.Fatalf("expected provider annotation %s=ping, got: %s", dnscaster.ProviderSpecificIPMonitorURIScheme, uri)
+			t.Fatalf("expected provider annotation %s=ping, got: %s", dnscaster.ProviderSpecificIPMonitorURI, uri)
 		}
 
-		uriPath, ok := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIPath)
+		redirects, ok := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects)
 		if ok {
-			t.Fatalf("unexpected provider annotation %s, got: %s", dnscaster.ProviderSpecificIPMonitorURIPath, uriPath)
-		}
-
-		redirects, ok := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline)
-		if ok {
-			t.Fatalf("unexpected provider annotation %s, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline, redirects)
+			t.Fatalf("unexpected provider annotation %s, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirects, redirects)
 		}
 	})
 
@@ -365,24 +375,6 @@ func TestProviderRecords(t *testing.T) {
 		}
 		if len(records) != 0 {
 			t.Fatalf("expected 0 records, got: %d", len(records))
-		}
-	})
-
-	t.Run("should return error when monitor doesn't exist", func(t *testing.T) {
-		t.Parallel()
-
-		p, fake := newTestProvider(t)
-
-		fake.
-			WithZone("z-1", "example.com").
-			WithHost(dnscaster.Host{ID: "h-1", ZoneID: "z-1", FQDN: "api.example.com", Data: "1.2.3.4", IPMonitorID: "m-missing"})
-
-		_, err := p.Records(context.Background())
-		if err == nil {
-			t.Fatal("expected an error when monitor cannot be fetched")
-		}
-		if !strings.Contains(err.Error(), "monitor not found") {
-			t.Fatalf("expected monitor not found error, got: %v", err)
 		}
 	})
 }
@@ -446,7 +438,7 @@ func TestProviderApplyChanges(t *testing.T) {
 		t.Parallel()
 
 		create := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
+		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
 
 		changes := &plan.Changes{
 			Delete: []*endpoint.Endpoint{
@@ -520,7 +512,7 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 
 	t.Run("should not create a monitor for unsupported types", func(t *testing.T) {
 		create := endpoint.NewEndpoint("app.example.com", "CNAME", "target.example.com")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
+		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
 
 		changes := &plan.Changes{
 			Create: []*endpoint.Endpoint{create},
@@ -530,104 +522,4 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
-
-	t.Run("should not create a monitor for bad annotation values", func(t *testing.T) {
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{
-				func() *endpoint.Endpoint {
-					e := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
-					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
-					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIPath, "")
-					return e
-				}(),
-				func() *endpoint.Endpoint {
-					e := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
-					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURIScheme, "https")
-					e.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirectsAsOffline, "false")
-					return e
-				}(),
-			},
-		}
-
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestRecordsReturnsErrorWhenMonitorDoesNotExist(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-	fake.
-		WithZone("z-1", "example.com").
-		WithHost(dnscaster.Host{ID: "h-1", ZoneID: "z-1", FQDN: "api.example.com", Data: "1.2.3.4", IPMonitorID: "m-missing"})
-
-	_, err := p.Records(context.Background())
-	if err == nil {
-		t.Fatal("expected an error when monitor cannot be fetched")
-	}
-	if !strings.Contains(err.Error(), "monitor not found") {
-		t.Fatalf("expected monitor not found error, got: %v", err)
-	}
-}
-
-func newTestProvider(t *testing.T) (provider.Provider, *dnscaster.FakeDNScasterClient) {
-	t.Helper()
-
-	config := baseConfig()
-	connConfig := baseConnConfig()
-	defaults := baseDefaults()
-
-	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
-	if err != nil {
-		t.Fatalf("creating fake dnscaster client failed: %v", err)
-	}
-
-	p, err := dnsprovider.InitWithClient(config, client)
-	if err != nil {
-		t.Fatalf("failed to init provider: %v", err)
-	}
-
-	return p, fake
-}
-
-func newTestProviderWithConfig(
-	t *testing.T,
-	config configuration.Config,
-	connConfig *dnscaster.DNScasterConnectionConfig,
-	defaults *dnscaster.DNScasterDefaults,
-) (provider.Provider, *dnscaster.FakeDNScasterClient) {
-	t.Helper()
-
-	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
-	if err != nil {
-		t.Fatalf("creating fake dnscaster client failed: %v", err)
-	}
-
-	p, err := dnsprovider.InitWithClient(config, client)
-	if err != nil {
-		t.Fatalf("failed to init provider: %v", err)
-	}
-
-	return p, fake
-}
-
-func baseConfig() configuration.Config {
-	cfg := configuration.Init()
-	cfg.DomainFilter = []string{"example.com"}
-	return cfg
-}
-
-func baseConnConfig() *dnscaster.DNScasterConnectionConfig {
-	return &dnscaster.DNScasterConnectionConfig{
-		ApiKey:          "k",
-		NameserverSetID: "ns-1",
-	}
-}
-
-func baseDefaults() *dnscaster.DNScasterDefaults {
-	return &dnscaster.DNScasterDefaults{
-		DefaultTTL: 600,
-	}
 }

@@ -10,7 +10,11 @@ spec:
       targets:
         - 1.1.1.1
       providerSpecific:
-        - name: webhook/dnscaster-ip-monitor-uri-scheme
+        - name: webhook/dnscaster-ip-monitor-uri
           value: ping
-        - name: webhook/dnscaster-ip-monitor-treat-redirects-as-offline
-          value: "true"
+        - name: webhook/dnscaster-ip-monitor-treat_redirects
+          value: online
+        - name: webhook/dnscaster-label-network
+          value: ethereum
+        - name: webhook/dnscaster-label-registry~1name # label with '/'
+          value: mainnet

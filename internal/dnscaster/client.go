@@ -20,11 +20,10 @@ import (
 //       https://github.com/golang/go/issues/77273 is accepted.
 
 const (
-	dnscasterBaseUrl            = "api.dnscaster.com"
-	dnscasterZonePath           = "v1/zones/"
-	dnscasterHostPath           = "v1/hosts/"
-	dnscasterMonitorPath        = "v1/ip_monitors/"
-	dnscasterNameserverSetsPath = "v1/nameserver_sets/"
+	dnscasterBaseUrl     = "api.dnscaster.com"
+	dnscasterZonePath    = "v1/zones/"
+	dnscasterHostPath    = "v1/hosts/"
+	dnscasterMonitorPath = "v1/ip_monitors/"
 )
 
 type DNScasterDefaults struct {
