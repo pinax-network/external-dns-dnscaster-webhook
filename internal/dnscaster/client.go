@@ -10,10 +10,13 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strings"
+	"time"
 
 	"golang.org/x/net/publicsuffix"
 
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/metrics"
 )
 
 // Note: Methods would be a good fit to be rewritten with generics in mind now that
@@ -149,6 +152,15 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 	var bodyReader io.Reader
 	var err error
 
+	m := metrics.Get()
+	start := time.Now()
+	statusCode := 0
+	responseBytes := 0
+	operation := normalizeOperation(path)
+	defer func() {
+		m.ObserveDNScasterCall(method, operation, statusCode, time.Since(start), responseBytes)
+	}()
+
 	url := url.URL{Scheme: "https", Host: dnscasterBaseUrl, Path: path}
 
 	if body != nil {
@@ -183,24 +195,60 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 
 	resp, err := c.Do(req)
 	if err != nil {
+		m.MarkOperation("dnscaster_api", false)
 		return NewNetworkError(method, url.String(), err)
 	}
 	defer resp.Body.Close()
 
+	statusCode = resp.StatusCode
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		m.MarkOperation("dnscaster_api", false)
+		return NewDataError("read", "API response body", err)
+	}
+	responseBytes = len(responseBody)
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		apiErr, decodeErr := decodeJSON[DnscasterErrorResponse](resp.Body)
+		apiErr, decodeErr := decodeJSON[DnscasterErrorResponse](bytes.NewReader(responseBody))
 		if decodeErr != nil {
+			m.MarkOperation("dnscaster_api", false)
 			return NewDataError("unmarshal", "API error response", decodeErr)
 		}
+		m.MarkOperation("dnscaster_api", false)
 		return NewAPIError(method, path, resp.StatusCode, apiErr.Message, apiErr.Errors)
 	}
 
 	// DNScaster returns 202 only on successful DELETE without a response body
 	if resp.StatusCode == http.StatusAccepted {
+		m.MarkOperation("dnscaster_api", true)
 		return nil
 	}
 
-	return json.NewDecoder(resp.Body).Decode(out)
+	if out == nil || len(responseBody) == 0 {
+		m.MarkOperation("dnscaster_api", true)
+		return nil
+	}
+
+	if err := json.Unmarshal(responseBody, out); err != nil {
+		m.MarkOperation("dnscaster_api", false)
+		return err
+	}
+	m.MarkOperation("dnscaster_api", true)
+	return nil
+}
+
+func normalizeOperation(path string) string {
+	switch {
+	case path == dnscasterZonePath:
+		return "zones"
+	case strings.HasPrefix(path, dnscasterHostPath):
+		return "hosts"
+	case strings.HasPrefix(path, dnscasterMonitorPath):
+		return "monitors"
+	default:
+		return path
+	}
 }
 
 func encodeJSON(v any) (io.Reader, error) {

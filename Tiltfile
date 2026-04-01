@@ -35,6 +35,28 @@ local_resource(
     deps=['./hack/cilium/manifests.yaml']
 )
 
+### Deploying monitoring
+helm_repo(
+    name="monitoring",
+    url="https://prometheus-community.github.io/helm-charts",
+)
+helm_resource(
+    name="monitoring-install",
+    chart="monitoring/kube-prometheus-stack",
+    namespace="monitoring",
+    resource_deps=['monitoring'],
+    flags=[
+        '--create-namespace',
+        '--values=./hack/monitoring/values.yaml',
+    ],
+)
+
+local_resource(
+    "dashboard-apply",
+    "kubectl apply -k ./hack/monitoring",
+    resource_deps=["monitoring-install"],
+)
+
 ###############################################
 # Using local build of external-dns-dnscaster #
 ###############################################
@@ -69,8 +91,9 @@ helm_repo(
 helm_resource(
     name="external-dns-install",
     chart="external-dns-repo/external-dns",
-    namespace="default",
+    namespace="external-dns",
     flags=[
+        '--create-namespace',
         '--values=./hack/external-dns/values.yaml',
         '--version=1.20.0',
     ],

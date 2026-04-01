@@ -1,0 +1,10 @@
+grafana:
+  adminUser: admin
+  adminPassword: admin
+  defaultDashboardEnabled: false
+
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorSelectorNamespaceSeclector: {}

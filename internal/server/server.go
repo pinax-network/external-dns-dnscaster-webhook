@@ -15,6 +15,7 @@ import (
 
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/metrics"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/webhook"
 )
 
@@ -36,6 +37,7 @@ func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 
 func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.Server) {
 	mainRouter := chi.NewRouter()
+	mainRouter.Use(metrics.NewMetricsMiddleware(metrics.Get()).Handler)
 	mainRouter.Get("/", p.Negotiate)
 	mainRouter.Get("/records", p.Records)
 	mainRouter.Post("/records", p.ApplyChanges)

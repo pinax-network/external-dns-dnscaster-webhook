@@ -38,3 +38,6 @@ provider:
           secretKeyRef:
             name: dnscaster-api-key
             key: API_KEY
+
+serviceMonitor:
+  enabled: true

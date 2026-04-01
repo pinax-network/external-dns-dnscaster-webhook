@@ -7,6 +7,7 @@ import (
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnsprovider"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/server"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/metrics"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/webhook"
 )
 
@@ -23,6 +24,7 @@ var (
 
 func main() {
 	log.Init()
+	metrics.New(version)
 
 	log.Info(fmt.Sprintf(banner, version, commit))
 
