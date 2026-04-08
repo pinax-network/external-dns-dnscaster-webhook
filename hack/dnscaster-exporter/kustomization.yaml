@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: external-dns
+
+resources:
+  - https://github.com/pinax-network/dnscaster-exporter//deploy/kustomize
+
+patches:
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value: []
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: LOG_FORMAT
+          value: text
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: LOG_LEVEL
+          value: debug
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: DNSCASTER_NAMESERVER_SET_ID
+          value: nst_0wd1fQSt2uYYNP4j3YLCZX
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: DNSCASTER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: dnscaster-api-key
+              key: API_KEY
+    target:
+      kind: Deployment

@@ -9,3 +9,10 @@ configMapGenerator:
         grafana_dashboard: "1"
     files:
       - ./dashboard.json
+  - name: dnscaster-monitors-overview
+    namespace: monitoring
+    options:
+      labels:
+        grafana_dashboard: "1"
+    files:
+      - ./dnscaster-monitors-overview.json
