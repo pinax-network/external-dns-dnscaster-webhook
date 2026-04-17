@@ -243,15 +243,8 @@ func (p *DNScasterProvider) createMonitorForHost(ctx context.Context, host Host)
 		return Monitor{}, err
 	}
 
-	// u := url.URL{Scheme: uriScheme, Host: host.Data, Path: host.Properties[ProviderSpecificIPMonitorURIPath]}
-
-	hash, err := genRandomHex()
-	if err != nil {
-		return Monitor{}, err
-	}
-
 	monitor, err := p.client.CreateMonitor(ctx, Monitor{
-		Name:            host.FQDN + "-" + hash,
+		Name:            host.FQDN,
 		URI:             u,
 		Hostname:        hostname,
 		TreatRedirects:  host.Properties[ProviderSpecificIPMonitorTreatRedirects],
