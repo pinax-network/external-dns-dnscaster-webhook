@@ -30,6 +30,9 @@ func getProviderSpecific(props map[string]string) endpoint.ProviderSpecific {
 
 	ps := make(endpoint.ProviderSpecific, 0, len(props))
 	for key, value := range props {
+		if key == "set-identifier" {
+			continue
+		}
 		if isReservedProviderSpecificKey(key) {
 			ps = append(ps, endpoint.ProviderSpecificProperty{Name: key, Value: value})
 			continue

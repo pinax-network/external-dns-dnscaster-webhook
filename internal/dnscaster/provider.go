@@ -136,6 +136,10 @@ func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	}
 	host.IPMonitorID = monitor.ID
 
+	if record.SetIdentifier != "" {
+		host.Properties["set-identifier"] = record.SetIdentifier
+	}
+
 	_, err = p.client.CreateHost(ctx, host)
 	if err != nil && monitor.ID != "" {
 		_ = p.client.DeleteMonitor(ctx, monitor.ID)
@@ -218,6 +222,11 @@ func (p *DNScasterProvider) hostsForEndpoint(record *endpoint.Endpoint) Host {
 func (p *DNScasterProvider) endpointForHost(host Host) *endpoint.Endpoint {
 	endpoint := endpoint.NewEndpointWithTTL(host.FQDN, host.DNSType, endpoint.TTL(host.TTL), host.Data)
 	endpoint.ProviderSpecific = getProviderSpecific(host.Properties)
+
+	setID, ok := host.Properties["set-identifier"]
+	if ok {
+		endpoint.SetIdentifier = setID
+	}
 
 	log.Debug("endpointFromHost", "endpoint", endpoint)
 	return endpoint
