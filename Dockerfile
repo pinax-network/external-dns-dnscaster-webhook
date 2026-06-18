@@ -1,10 +1,10 @@
-FROM docker.io/library/golang:1.26-alpine AS builder
+FROM docker.io/library/golang:1.26.4-alpine3.24 AS builder
 ARG PKG=github.com/pinax-network/external-dns-dnscaster-webhook
 ARG VERSION=dev
 ARG REVISION=dev
 
 RUN echo 'nobody:x:65534:65534:Nobody:/:' > /tmp/passwd && \
-    apk add --no-cache upx=5.0.2-r0
+    apk add --no-cache upx=5.2.0-r0
 
 WORKDIR /build
 COPY . .
