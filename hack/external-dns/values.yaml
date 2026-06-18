@@ -33,6 +33,8 @@ provider:
 
       - name: DNSCASTER_NAMESERVER_SET_ID
         value: nst_0wd1fQSt2uYYNP4j3YLCZX
+      - name: DNSCASTER_OWNER_ID
+        value: kind-test
       - name: DNSCASTER_API_KEY
         valueFrom:
           secretKeyRef:
