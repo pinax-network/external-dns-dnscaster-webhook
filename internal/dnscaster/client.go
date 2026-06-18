@@ -35,6 +35,7 @@ type DNScasterDefaults struct {
 
 // DNScasterConnectionConfig holds the connection details for the API client
 type DNScasterConnectionConfig struct {
+	OwnerID         string `env:"DNSCASTER_OWNER_ID,notEmpty"`
 	ApiKey          string `env:"DNSCASTER_API_KEY,notEmpty"`
 	NameserverSetID string `env:"DNSCASTER_NAMESERVER_SET_ID,notEmpty"`
 	SkipTLSVerify   bool   `env:"DNSCASTER_SKIP_TLS_VERIFY" envDefault:"false"`
@@ -84,11 +85,11 @@ func (c *DNScasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 	return out.Collection, nil
 }
 
-func (c *DNScasterApiClient) ListHosts(ctx context.Context, zoneID string) ([]Host, error) {
+func (c *DNScasterApiClient) ListHosts(ctx context.Context) ([]Host, error) {
 	var out ListResponse[Host]
 
 	q := url.Values{}
-	q.Set("zone_id", zoneID)
+	q.Set("properties["+ProviderMetadataOwnerID+"]", c.OwnerID)
 
 	if err := c.do(ctx, http.MethodGet, dnscasterHostPath, q, nil, &out); err != nil {
 		return nil, fmt.Errorf("failed to list hosts: %w", err)

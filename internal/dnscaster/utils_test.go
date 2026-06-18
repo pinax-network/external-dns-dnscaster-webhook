@@ -61,6 +61,7 @@ func baseConnConfig() *dnscaster.DNScasterConnectionConfig {
 	return &dnscaster.DNScasterConnectionConfig{
 		ApiKey:          "k",
 		NameserverSetID: "ns-1",
+		OwnerID:         "controller-1",
 	}
 }
 

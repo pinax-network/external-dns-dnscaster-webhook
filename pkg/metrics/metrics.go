@@ -42,6 +42,7 @@ type Metrics struct {
 	NegotiateTotal       *prometheus.CounterVec
 
 	// DNScaster API metrics (outbound)
+	DNScasterAPIRequestsTotal    *prometheus.CounterVec
 	DNScasterAPIErrorsTotal      *prometheus.CounterVec
 	DNScasterAPIDuration         *prometheus.HistogramVec
 	DNScasterResponseSizeBytes   *prometheus.HistogramVec
@@ -225,6 +226,15 @@ func New(version string) *Metrics {
 				},
 				[]string{"provider"},
 			),
+			DNScasterAPIRequestsTotal: prometheus.NewCounterVec(
+				prometheus.CounterOpts{
+					Namespace: namespace,
+					Subsystem: "dnscaster",
+					Name:      "api_requests_total",
+					Help:      "Total number of outbound requests sent to the DNScaster API.",
+				},
+				[]string{"provider", "method", "path", "status"},
+			),
 			DNScasterAPIErrorsTotal: prometheus.NewCounterVec(
 				prometheus.CounterOpts{
 					Namespace: namespace,
@@ -340,6 +350,7 @@ func New(version string) *Metrics {
 			m.ChangesByTypeTotal,
 			m.AdjustEndpointsTotal,
 			m.NegotiateTotal,
+			m.DNScasterAPIRequestsTotal,
 			m.DNScasterAPIErrorsTotal,
 			m.DNScasterAPIDuration,
 			m.DNScasterResponseSizeBytes,
@@ -399,6 +410,7 @@ func (m *Metrics) ObserveWebhookRequest(method, path string, status int, duratio
 
 func (m *Metrics) ObserveDNScasterCall(method, path string, status int, duration time.Duration, responseBytes int) {
 	statusLabel := strconv.Itoa(status)
+	m.DNScasterAPIRequestsTotal.WithLabelValues(ProviderName, method, path, statusLabel).Inc()
 	m.DNScasterAPIDuration.WithLabelValues(ProviderName, method, path, statusLabel).Observe(duration.Seconds())
 	m.DNScasterResponseSizeBytes.WithLabelValues(ProviderName, method, path, statusLabel).Observe(float64(responseBytes))
 	m.DNScasterHTTPResponsesByCode.WithLabelValues(ProviderName, path, StatusClass(status)).Inc()

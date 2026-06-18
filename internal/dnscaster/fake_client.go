@@ -135,15 +135,23 @@ func (f *FakeDNScasterClient) roundTrip(req *http.Request) (*http.Response, erro
 }
 
 func (f *FakeDNScasterClient) handleListHosts(req *http.Request) (*http.Response, error) {
-	zoneID := req.URL.Query().Get("zone_id")
-	if zoneID == "" {
+	ownerID := req.URL.Query().Get("properties[" + ProviderMetadataOwnerID + "]")
+	if ownerID == "" {
 		return f.json(http.StatusBadRequest, map[string]any{
-			"error": "missing zone_id",
+			"error": "missing " + ProviderMetadataOwnerID + " property",
 		})
+	}
+	var hosts []Host
+	for _, zoneHosts := range f.Hosts {
+		for _, host := range zoneHosts {
+			if host.Properties[ProviderMetadataOwnerID] == ownerID {
+				hosts = append(hosts, host)
+			}
+		}
 	}
 
 	return f.json(http.StatusOK, map[string]any{
-		"collection": f.Hosts[zoneID],
+		"collection": hosts,
 	})
 }
 

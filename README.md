@@ -29,11 +29,12 @@ to your DNScaster service provider.
 
 ### DNScaster Connection Configuration
 
-| Environment Variable          | Description                                           | Default Value |
-| ----------------------------- | ----------------------------------------------------- | ------------- |
-| `DNSCASTER_API_KEY`           | API key needed to communicate with DNScaster API      | N/A           |
-| `DNSCASTER_NAMESERVER_SET_ID` | DNScaster Nameserver Set tied to this provider        | N/A           |
-| `DNSCASTER_SKIP_TLS_VERIFY`   | Whether to skip TLS verification (`true` or `false`). | `false`       |
+| Environment Variable          | Description                                              | Default Value |
+| ----------------------------- | -------------------------------------------------------- | ------------- |
+| `DNSCASTER_OWNER_ID`          | ID used when filtering resources to save on API requests | N/A           |
+| `DNSCASTER_API_KEY`           | API key needed to communicate with DNScaster API         | N/A           |
+| `DNSCASTER_NAMESERVER_SET_ID` | DNScaster Nameserver Set tied to this provider           | N/A           |
+| `DNSCASTER_SKIP_TLS_VERIFY`   | Whether to skip TLS verification (`true` or `false`).    | `false`       |
 
 ### Default Values Configuration
 

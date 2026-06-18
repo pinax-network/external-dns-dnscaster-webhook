@@ -55,24 +55,14 @@ func NewDNScasterProviderWithClient(domainFilter *endpoint.DomainFilter, default
 }
 
 func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
-	zones, err := p.client.ListZones(ctx)
+	hosts, err := p.client.ListHosts(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	managedZones, err := p.filterManagedZones(zones)
-	if err != nil {
-		return nil, err
-	}
-
-	records := make([]*endpoint.Endpoint, 0)
-	for _, zone := range managedZones {
-		hosts, err := p.client.ListHosts(ctx, zone.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, host := range hosts {
+	records := make([]*endpoint.Endpoint, 0, len(hosts))
+	for _, host := range hosts {
+		if p.domainFilter.Match(host.FQDN) {
 			records = append(records, p.endpointForHost(host))
 		}
 	}
@@ -80,26 +70,12 @@ func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 }
 
 func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
-	zones, err := p.client.ListZones(ctx)
-	if err != nil {
-		return err
-	}
-
-	managedZones, err := p.filterManagedZones(zones)
-	if err != nil {
-		return err
-	}
-
-	zonesMap := make(zonesMap, len(managedZones))
-	for _, zone := range managedZones {
-		zonesMap[zone.Domain] = zone.ID
-	}
-
+	zonesMap := make(zonesMap)
 	hostsMap := make(hostsMap)
 
 	// Process deletions (records to update will be deleted and recreated later)
 	for _, record := range append(changes.UpdateOld, changes.Delete...) {
-		if err := p.applyDelete(ctx, record, zonesMap, hostsMap); err != nil {
+		if err := p.applyDelete(ctx, record, hostsMap); err != nil {
 			return err
 		}
 	}
@@ -114,6 +90,24 @@ func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 	return nil
 }
 
+func (p *DNScasterProvider) zonesMap(ctx context.Context) (zonesMap, error) {
+	zones, err := p.client.ListZones(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	managedZones, err := p.filterManagedZones(zones)
+	if err != nil {
+		return nil, err
+	}
+
+	zonesMap := make(zonesMap, len(managedZones))
+	for _, zone := range managedZones {
+		zonesMap[zone.Domain] = zone.ID
+	}
+	return zonesMap, nil
+}
+
 // GetDomainFilter returns the domain filter for the provider.
 func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
@@ -126,9 +120,31 @@ func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	log.Debug("applyCreate", "record", record)
 
 	host := p.hostsForEndpoint(record)
+	p.applyOwnerProperty(host.Properties)
 	hostname, zone := p.trimHostnameFromFQDN(record)
+
+	zoneID, ok := zonesMap[zone]
+	if !ok {
+		zones, err := p.client.ListZones(ctx)
+		if err != nil {
+			return err
+		}
+
+		managedZones, err := p.filterManagedZones(zones)
+		if err != nil {
+			return err
+		}
+
+		for _, zone := range managedZones {
+			zonesMap[zone.Domain] = zone.ID
+		}
+
+		// Set the zoneID now that the map is populated
+		zoneID = zonesMap[zone]
+	}
+
 	host.Hostname = hostname
-	host.ZoneID = zonesMap[zone]
+	host.ZoneID = zoneID
 
 	monitor, err := p.createMonitorForHost(ctx, host)
 	if err != nil {
@@ -137,7 +153,7 @@ func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	host.IPMonitorID = monitor.ID
 
 	if record.SetIdentifier != "" {
-		host.Properties["set-identifier"] = record.SetIdentifier
+		host.Properties[ProviderMetadataSetIdentifier] = record.SetIdentifier
 	}
 
 	_, err = p.client.CreateHost(ctx, host)
@@ -147,7 +163,7 @@ func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	return err
 }
 
-func (p *DNScasterProvider) applyDelete(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap, hostsMap hostsMap) error {
+func (p *DNScasterProvider) applyDelete(ctx context.Context, record *endpoint.Endpoint, hostsMap hostsMap) error {
 	if len(record.Targets) == 0 {
 		return fmt.Errorf("no target set on record: %v", record)
 	}
@@ -156,9 +172,7 @@ func (p *DNScasterProvider) applyDelete(ctx context.Context, record *endpoint.En
 	hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
 	host, ok := hostsMap[hk]
 	if !ok {
-		// Will need to add the zone's hosts to map
-		_, zone := p.trimHostnameFromFQDN(record)
-		hosts, err := p.client.ListHosts(ctx, zonesMap[zone])
+		hosts, err := p.client.ListHosts(ctx)
 		if err != nil {
 			return err
 		}
@@ -223,7 +237,7 @@ func (p *DNScasterProvider) endpointForHost(host Host) *endpoint.Endpoint {
 	endpoint := endpoint.NewEndpointWithTTL(host.FQDN, host.DNSType, endpoint.TTL(host.TTL), host.Data)
 	endpoint.ProviderSpecific = getProviderSpecific(host.Properties)
 
-	setID, ok := host.Properties["set-identifier"]
+	setID, ok := host.Properties[ProviderMetadataSetIdentifier]
 	if ok {
 		endpoint.SetIdentifier = setID
 	}
@@ -272,6 +286,13 @@ func (p *DNScasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {
 		return int64(record.RecordTTL)
 	}
 	return p.client.DefaultTTL
+}
+
+func (p *DNScasterProvider) applyOwnerProperty(properties map[string]string) {
+	if p.client.OwnerID == "" {
+		return
+	}
+	properties[ProviderMetadataOwnerID] = p.client.OwnerID
 }
 
 func (p *DNScasterProvider) trimHostnameFromFQDN(record *endpoint.Endpoint) (string, string) {

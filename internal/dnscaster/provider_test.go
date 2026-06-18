@@ -274,9 +274,9 @@ func TestProviderRecords(t *testing.T) {
 		fake.
 			WithZone("z-1", "example.com").
 			WithZone("z-2", "other.com").
-			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1"}).
-			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-2"}).
-			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-3"})
+			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1", FQDN: "app.example.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}}).
+			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-2", FQDN: "app.other.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}}).
+			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-3", FQDN: "other.example.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-2"}})
 
 		records, err := p.Records(context.Background())
 		if err != nil {
@@ -300,6 +300,7 @@ func TestProviderRecords(t *testing.T) {
 				Hostname:    "api",
 				FQDN:        "api.example.com",
 				Properties: map[string]string{
+					dnscaster.ProviderMetadataOwnerID:                 "controller-1",
 					dnscaster.ProviderSpecificIPMonitorURI:            "https:/health",
 					dnscaster.ProviderSpecificIPMonitorTreatRedirects: "offline",
 				},
@@ -338,6 +339,7 @@ func TestProviderRecords(t *testing.T) {
 				Hostname:    "api",
 				FQDN:        "api.example.com",
 				Properties: map[string]string{
+					dnscaster.ProviderMetadataOwnerID:      "controller-1",
 					dnscaster.ProviderSpecificIPMonitorURI: "ping",
 				},
 			}).
@@ -362,12 +364,11 @@ func TestProviderRecords(t *testing.T) {
 		}
 	})
 
-	t.Run("should return error when zoneID doesn't exist", func(t *testing.T) {
+	t.Run("should ignore owned records outside domain filter", func(t *testing.T) {
 		p, fake := newTestProvider(t)
 
 		fake.
-			WithZone("z-1", "example.com").
-			WithHost(dnscaster.Host{ZoneID: "z-fake", ID: "h-1"})
+			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-1", FQDN: "app.other.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}})
 
 		records, err := p.Records(context.Background())
 		if err != nil {
@@ -393,6 +394,7 @@ func TestProviderApplyChanges(t *testing.T) {
 			DNSType:     "A",
 			Data:        "1.2.3.4",
 			IPMonitorID: "m-old",
+			Properties:  map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
 		}).
 		WithMonitor(dnscaster.Monitor{ID: "m-old"})
 

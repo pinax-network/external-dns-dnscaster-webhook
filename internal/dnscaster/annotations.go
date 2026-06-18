@@ -10,11 +10,21 @@ import (
 )
 
 const (
+	ProviderMetadataOwnerID       = "owner-id"
+	ProviderMetadataSetIdentifier = "set-identifier"
+)
+
+const (
 	ProviderSpecificLabelPrefix             = "webhook/dnscaster-label-"
 	ProviderSpecificIPMonitorURI            = "webhook/dnscaster-ip-monitor-uri"
 	ProviderSpecificIPMonitorHostname       = "webhook/dnscaster-ip-monitor-hostname"
 	ProviderSpecificIPMonitorTreatRedirects = "webhook/dnscaster-ip-monitor-treat_redirects"
 )
+
+var reservedProviderMetadataKeys = map[string]struct{}{
+	ProviderMetadataOwnerID:       {},
+	ProviderMetadataSetIdentifier: {},
+}
 
 var reservedProviderSpecificKeys = map[string]struct{}{
 	ProviderSpecificIPMonitorURI:            {},
@@ -30,7 +40,8 @@ func getProviderSpecific(props map[string]string) endpoint.ProviderSpecific {
 
 	ps := make(endpoint.ProviderSpecific, 0, len(props))
 	for key, value := range props {
-		if key == "set-identifier" {
+		if isReservedProviderMetadataKey(key) {
+			// Ignoring metadata key used for implementation logic
 			continue
 		}
 		if isReservedProviderSpecificKey(key) {
@@ -60,6 +71,11 @@ func extractProperties(ps endpoint.ProviderSpecific) map[string]string {
 		properties[unescapeLabelKey(label)] = p.Value
 	}
 	return properties
+}
+
+func isReservedProviderMetadataKey(k string) bool {
+	_, ok := reservedProviderMetadataKeys[k]
+	return ok
 }
 
 func isReservedProviderSpecificKey(k string) bool {
