@@ -48,8 +48,7 @@ func TestDoBuildsRequestAndDecodesJSON(t *testing.T) {
 		}, nil
 	}))
 
-	var out ListResponse[Zone]
-	err := client.do(context.Background(), http.MethodGet, dnscasterZonePath, url.Values{"limit": {"10"}}, nil, &out)
+	out, err := client.do[ListResponse[Zone]](context.Background(), http.MethodGet, dnscasterZonePath, url.Values{"limit": {"10"}}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,7 +76,7 @@ func TestDoSetsContentTypeForRequestBody(t *testing.T) {
 		}, nil
 	}))
 
-	err := client.do(context.Background(), http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: Host{ZoneID: "z-1"}}, &Host{})
+	_, err := client.do[Host](context.Background(), http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: Host{ZoneID: "z-1"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +89,7 @@ func TestDoReturnsNetworkError(t *testing.T) {
 		return nil, errors.New("dial error")
 	}))
 
-	err := client.do(context.Background(), http.MethodGet, dnscasterZonePath, nil, nil, &ListResponse[Zone]{})
+	_, err := client.do[ListResponse[Zone]](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -112,7 +111,7 @@ func TestDoReturnsAPIError(t *testing.T) {
 		}, nil
 	}))
 
-	err := client.do(context.Background(), http.MethodGet, dnscasterZonePath, nil, nil, &ListResponse[Zone]{})
+	_, err := client.do[ListResponse[Zone]](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -137,7 +136,7 @@ func TestDoReturnsDataErrorOnUndecodableAPIErrorBody(t *testing.T) {
 		}, nil
 	}))
 
-	err := client.do(context.Background(), http.MethodGet, dnscasterZonePath, nil, nil, &ListResponse[Zone]{})
+	_, err := client.do[ListResponse[Zone]](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -162,7 +161,7 @@ func TestDoReturnsNilOnAcceptedDelete(t *testing.T) {
 		}, nil
 	}))
 
-	err := client.do(context.Background(), http.MethodDelete, dnscasterHostPath+"h-1", nil, nil, nil)
+	_, err := client.do[struct{}](context.Background(), http.MethodDelete, dnscasterHostPath+"h-1", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

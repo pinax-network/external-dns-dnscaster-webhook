@@ -19,9 +19,6 @@ import (
 	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/metrics"
 )
 
-// Note: Methods would be a good fit to be rewritten with generics in mind now that
-//       https://github.com/golang/go/issues/77273 is accepted.
-
 const (
 	dnscasterBaseUrl     = "api.dnscaster.com"
 	dnscasterZonePath    = "v1/zones/"
@@ -75,9 +72,8 @@ func NewDNScasterClient(config *DNScasterConnectionConfig, defaults *DNScasterDe
 }
 
 func (c *DNScasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
-	var out ListResponse[Zone]
-
-	if err := c.do(ctx, http.MethodGet, dnscasterZonePath, nil, nil, &out); err != nil {
+	out, err := c.do[ListResponse[Zone]](ctx, http.MethodGet, dnscasterZonePath, nil, nil)
+	if err != nil {
 		return nil, err
 	}
 
@@ -86,12 +82,11 @@ func (c *DNScasterApiClient) ListZones(ctx context.Context) ([]Zone, error) {
 }
 
 func (c *DNScasterApiClient) ListHosts(ctx context.Context) ([]Host, error) {
-	var out ListResponse[Host]
-
 	q := url.Values{}
 	q.Set("properties["+ProviderMetadataOwnerID+"]", c.OwnerID)
 
-	if err := c.do(ctx, http.MethodGet, dnscasterHostPath, q, nil, &out); err != nil {
+	out, err := c.do[ListResponse[Host]](ctx, http.MethodGet, dnscasterHostPath, q, nil)
+	if err != nil {
 		return nil, fmt.Errorf("failed to list hosts: %w", err)
 	}
 
@@ -100,9 +95,8 @@ func (c *DNScasterApiClient) ListHosts(ctx context.Context) ([]Host, error) {
 }
 
 func (c *DNScasterApiClient) CreateHost(ctx context.Context, host Host) (Host, error) {
-	var out Host
-
-	if err := c.do(ctx, http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: host}, &out); err != nil {
+	out, err := c.do[Host](ctx, http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: host})
+	if err != nil {
 		return out, fmt.Errorf("failed to create host: %w", err)
 	}
 
@@ -111,17 +105,17 @@ func (c *DNScasterApiClient) CreateHost(ctx context.Context, host Host) (Host, e
 }
 
 func (c *DNScasterApiClient) DeleteHost(ctx context.Context, hostID string) error {
-	if err := c.do(ctx, http.MethodDelete, dnscasterHostPath+hostID, nil, nil, nil); err != nil {
+	if _, err := c.do[struct{}](ctx, http.MethodDelete, dnscasterHostPath+hostID, nil, nil); err != nil {
 		return fmt.Errorf("failed to delete host: %w", err)
 	}
+
 	log.Debug("DeleteHost", "host.id", hostID)
 	return nil
 }
 
 func (c *DNScasterApiClient) GetMonitor(ctx context.Context, monitorID string) (Monitor, error) {
-	var out Monitor
-
-	if err := c.do(ctx, http.MethodGet, dnscasterMonitorPath+monitorID, nil, nil, &out); err != nil {
+	out, err := c.do[Monitor](ctx, http.MethodGet, dnscasterMonitorPath+monitorID, nil, nil)
+	if err != nil {
 		return out, fmt.Errorf("failed to get monitor: %w", err)
 	}
 
@@ -130,9 +124,8 @@ func (c *DNScasterApiClient) GetMonitor(ctx context.Context, monitorID string) (
 }
 
 func (c *DNScasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error) {
-	var out Monitor
-
-	if err := c.do(ctx, http.MethodPost, dnscasterMonitorPath, nil, MonitorEnvelope{Monitor: monitor}, &out); err != nil {
+	out, err := c.do[Monitor](ctx, http.MethodPost, dnscasterMonitorPath, nil, MonitorEnvelope{Monitor: monitor})
+	if err != nil {
 		return out, fmt.Errorf("failed to create monitor: %w", err)
 	}
 
@@ -141,7 +134,7 @@ func (c *DNScasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor)
 }
 
 func (c *DNScasterApiClient) DeleteMonitor(ctx context.Context, monitorID string) error {
-	if err := c.do(ctx, http.MethodDelete, dnscasterMonitorPath+monitorID, nil, nil, nil); err != nil {
+	if _, err := c.do[struct{}](ctx, http.MethodDelete, dnscasterMonitorPath+monitorID, nil, nil); err != nil {
 		return fmt.Errorf("failed to delete monitor: %w", err)
 	}
 
@@ -149,7 +142,10 @@ func (c *DNScasterApiClient) DeleteMonitor(ctx context.Context, monitorID string
 	return nil
 }
 
-func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query url.Values, body any, out any) error {
+// do sends a request to the DNScaster API and decodes the JSON response into T.
+// The zero value of T is returned on error and for responses without a body.
+func (c *DNScasterApiClient) do[T any](ctx context.Context, method, path string, query url.Values, body any) (T, error) {
+	var out T
 	var bodyReader io.Reader
 	var err error
 
@@ -167,7 +163,7 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 	if body != nil {
 		bodyReader, err = encodeJSON(body)
 		if err != nil {
-			return err
+			return out, err
 		}
 	}
 
@@ -183,7 +179,7 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 
 	req, err := http.NewRequestWithContext(ctx, method, url.String(), bodyReader)
 	if err != nil {
-		return fmt.Errorf("failed to create HTTP request: %w", err)
+		return out, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 
 	req.Header.Set("Accept", "application/json")
@@ -197,7 +193,7 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 	resp, err := c.Do(req)
 	if err != nil {
 		m.MarkOperation("dnscaster_api", false)
-		return NewNetworkError(method, url.String(), err)
+		return out, NewNetworkError(method, url.String(), err)
 	}
 	defer resp.Body.Close()
 
@@ -206,7 +202,7 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		m.MarkOperation("dnscaster_api", false)
-		return NewDataError("read", "API response body", err)
+		return out, NewDataError("read", "API response body", err)
 	}
 	responseBytes = len(responseBody)
 
@@ -214,29 +210,24 @@ func (c *DNScasterApiClient) do(ctx context.Context, method, path string, query 
 		apiErr, decodeErr := decodeJSON[DnscasterErrorResponse](bytes.NewReader(responseBody))
 		if decodeErr != nil {
 			m.MarkOperation("dnscaster_api", false)
-			return NewDataError("unmarshal", "API error response", decodeErr)
+			return out, NewDataError("unmarshal", "API error response", decodeErr)
 		}
 		m.MarkOperation("dnscaster_api", false)
-		return NewAPIError(method, path, resp.StatusCode, apiErr.Message, apiErr.Errors)
+		return out, NewAPIError(method, path, resp.StatusCode, apiErr.Message, apiErr.Errors)
 	}
 
 	// DNScaster returns 202 only on successful DELETE without a response body
-	if resp.StatusCode == http.StatusAccepted {
+	if resp.StatusCode == http.StatusAccepted || len(responseBody) == 0 {
 		m.MarkOperation("dnscaster_api", true)
-		return nil
+		return out, nil
 	}
 
-	if out == nil || len(responseBody) == 0 {
-		m.MarkOperation("dnscaster_api", true)
-		return nil
-	}
-
-	if err := json.Unmarshal(responseBody, out); err != nil {
+	if err := json.Unmarshal(responseBody, &out); err != nil {
 		m.MarkOperation("dnscaster_api", false)
-		return err
+		return out, err
 	}
 	m.MarkOperation("dnscaster_api", true)
-	return nil
+	return out, nil
 }
 
 func normalizeOperation(path string) string {
