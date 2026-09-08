@@ -11,7 +11,7 @@ TAG ?= $(VERSION)
 
 # Run all unit tests.
 test:
-	go test ./...
+	go test -race ./...
 
 # Build the Docker image once and add additional tags without rebuilding.
 docker-build:

@@ -37,12 +37,19 @@ type APIError struct {
 	Operation  string
 	URL        string
 	StatusCode int
+	RequestID  string
 	Message    string
 	Errors     []string
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("API error during %s to %s (status %d): %s %s", e.Operation, e.URL, e.StatusCode, e.Message, e.Errors)
+	msg := fmt.Sprintf("API error during %s to %s (status %d): %s %s", e.Operation, e.URL, e.StatusCode, e.Message, e.Errors)
+	if e.RequestID != "" {
+		// The API returns X-Request-ID on every response and DNScaster support
+		// uses it to trace a specific call.
+		msg += fmt.Sprintf(" [request-id: %s]", e.RequestID)
+	}
+	return msg
 }
 
 // NewNetworkError creates a new network error.
@@ -64,11 +71,12 @@ func NewDataError(operation, dataType string, err error) error {
 }
 
 // NewAPIError creates a new API error.
-func NewAPIError(operation, url string, statusCode int, message string, errors []string) error {
+func NewAPIError(operation, url string, statusCode int, requestID, message string, errors []string) error {
 	return &APIError{
 		Operation:  operation,
 		URL:        url,
 		StatusCode: statusCode,
+		RequestID:  requestID,
 		Message:    message,
 		Errors:     errors,
 	}

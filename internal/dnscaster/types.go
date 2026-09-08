@@ -1,5 +1,13 @@
 package dnscaster
 
+// pageable is a list resource that can be paged through by resource ID.
+type pageable interface {
+	GetID() string
+}
+
+// noContent is the response type for API calls that return no payload.
+type noContent struct{}
+
 type NameserverSet struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
@@ -9,6 +17,9 @@ type Zone struct {
 	ID     string `json:"id"`
 	Domain string `json:"domain"`
 }
+
+// GetID implements pageable.
+func (z Zone) GetID() string { return z.ID }
 
 type Host struct {
 	ZoneID      string            `json:"zone_id,omitempty"`
@@ -23,6 +34,9 @@ type Host struct {
 	IPMonitorID string            `json:"ip_monitor_id,omitempty"`
 }
 
+// GetID implements pageable.
+func (h Host) GetID() string { return h.ID }
+
 type Monitor struct {
 	ID              string            `json:"id,omitempty"`
 	Name            string            `json:"name,omitempty"`
@@ -33,8 +47,15 @@ type Monitor struct {
 	Properties      map[string]string `json:"properties,omitempty"`
 }
 
+// GetID implements pageable.
+func (m Monitor) GetID() string { return m.ID }
+
+// ListResponse is the envelope wrapping every paged "List" response. MoreResults
+// reports whether further pages are available; see
+// https://dnscaster.com/docs/api/basics
 type ListResponse[T any] struct {
-	Collection []T `json:"collection"`
+	Collection  []T  `json:"collection"`
+	MoreResults bool `json:"more_results"`
 }
 
 type HostEnvelope struct {

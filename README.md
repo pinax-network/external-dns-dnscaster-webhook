@@ -38,9 +38,10 @@ to your DNScaster service provider.
 
 ### Default Values Configuration
 
-| Environment Variable    | Description                                                        | Default Value |
-| ----------------------- | ------------------------------------------------------------------ | ------------- |
-| `DNSCASTER_DEFAULT_TTL` | Default TTL value to be set for DNS records with no specified TTL. | `300`         |
+| Environment Variable          | Description                                                        | Default Value |
+| ----------------------------- | ------------------------------------------------------------------ | ------------- |
+| `DNSCASTER_DEFAULT_TTL`       | Default TTL value to be set for DNS records with no specified TTL. | `300`         |
+| `DNSCASTER_DEFAULT_PAGE_SIZE` | Records requested per page when listing (`max_results`).           | `100`         |
 
 ### Server Configuration
 

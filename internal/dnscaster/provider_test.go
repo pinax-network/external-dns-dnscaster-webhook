@@ -2,6 +2,7 @@ package dnscaster_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -524,4 +525,45 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestRecordsReturnsHostsBeyondTheFirstPage(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+	fake.WithZone("z-1", "example.com")
+
+	// The API caps a list response at max_results records and reports the rest
+	// via more_results. Before paging was implemented the provider only ever saw
+	// the first page, so external-dns treated the remaining records as missing
+	// and recreated them on every reconcile.
+	const total = 250
+	for i := range total {
+		fake.WithHost(dnscaster.Host{
+			ID:         fmt.Sprintf("h-%04d", i),
+			ZoneID:     "z-1",
+			FQDN:       fmt.Sprintf("app-%04d.example.com", i),
+			Hostname:   fmt.Sprintf("app-%04d", i),
+			DNSType:    "A",
+			Data:       "1.2.3.4",
+			TTL:        300,
+			Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
+		})
+	}
+
+	records, err := p.Records(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != total {
+		t.Fatalf("expected %d records, got %d", total, len(records))
+	}
+
+	seen := make(map[string]bool, len(records))
+	for _, record := range records {
+		if seen[record.DNSName] {
+			t.Fatalf("record listed twice: %s", record.DNSName)
+		}
+		seen[record.DNSName] = true
+	}
 }

@@ -372,11 +372,7 @@ func New(version string) *Metrics {
 
 // Get returns the singleton metrics instance.
 func Get() *Metrics {
-	if instance == nil {
-		return New("unknown")
-	}
-
-	return instance
+	return New("unknown")
 }
 
 func StatusClass(status int) string {

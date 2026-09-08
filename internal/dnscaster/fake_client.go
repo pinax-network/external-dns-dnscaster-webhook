@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -100,9 +102,7 @@ func (f *FakeDNScasterClient) roundTrip(req *http.Request) (*http.Response, erro
 
 	// List Zones
 	case req.Method == http.MethodGet && req.URL.Path == "/"+dnscasterZonePath:
-		return f.json(http.StatusOK, map[string]any{
-			"collection": f.Zones,
-		})
+		return f.json(http.StatusOK, pageCollection(f.Zones, req))
 
 	// List Hosts
 	case req.Method == http.MethodGet && req.URL.Path == "/"+dnscasterHostPath:
@@ -150,9 +150,7 @@ func (f *FakeDNScasterClient) handleListHosts(req *http.Request) (*http.Response
 		}
 	}
 
-	return f.json(http.StatusOK, map[string]any{
-		"collection": hosts,
-	})
+	return f.json(http.StatusOK, pageCollection(hosts, req))
 }
 
 func (f *FakeDNScasterClient) handleCreateHost(req *http.Request) (*http.Response, error) {
@@ -285,6 +283,7 @@ func (f *FakeDNScasterClient) json(status int, v any) (*http.Response, error) {
 		Body:       io.NopCloser(bytes.NewReader(b)),
 		Header: http.Header{
 			"Content-Type": []string{"application/json"},
+			"X-Request-Id": []string{"rq_fake"},
 		},
 	}, nil
 }
@@ -294,4 +293,37 @@ func (f *FakeDNScasterClient) apiError(status int, message string) (*http.Respon
 		Message: message,
 		Errors:  []string{message},
 	})
+}
+
+// pageCollection applies the documented paging parameters to a collection so
+// tests exercise the client's paging loop. Resource IDs sort ASCII ascending,
+// which is what the API guarantees and what "after" pages from.
+func pageCollection[T pageable](items []T, req *http.Request) map[string]any {
+	page := slices.Clone(items)
+	slices.SortFunc(page, func(a, b T) int { return strings.Compare(a.GetID(), b.GetID()) })
+
+	if after := req.URL.Query().Get("after"); after != "" {
+		cut := 0
+		for cut < len(page) && page[cut].GetID() <= after {
+			cut++
+		}
+		page = page[cut:]
+	}
+
+	maxResults := 100
+	if raw := req.URL.Query().Get("max_results"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			maxResults = n
+		}
+	}
+
+	moreResults := len(page) > maxResults
+	if moreResults {
+		page = page[:maxResults]
+	}
+
+	return map[string]any{
+		"collection":   page,
+		"more_results": moreResults,
+	}
 }
