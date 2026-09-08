@@ -94,8 +94,7 @@ func TestDoReturnsNetworkError(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 
-	var netErr *NetworkError
-	if !errors.As(err, &netErr) {
+	if _, ok := errors.AsType[*NetworkError](err); !ok {
 		t.Fatalf("expected NetworkError, got: %T (%v)", err, err)
 	}
 }
@@ -116,8 +115,8 @@ func TestDoReturnsAPIError(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
+	apiErr, ok := errors.AsType[*APIError](err)
+	if !ok {
 		t.Fatalf("expected APIError, got: %T (%v)", err, err)
 	}
 	if apiErr.StatusCode != http.StatusBadRequest {
@@ -141,8 +140,7 @@ func TestDoReturnsDataErrorOnUndecodableAPIErrorBody(t *testing.T) {
 		t.Fatalf("expected error")
 	}
 
-	var dataErr *DataError
-	if !errors.As(err, &dataErr) {
+	if _, ok := errors.AsType[*DataError](err); !ok {
 		t.Fatalf("expected DataError, got: %T (%v)", err, err)
 	}
 }
