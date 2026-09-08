@@ -1,4 +1,4 @@
-FROM docker.io/library/golang:1.26.4-alpine3.24 AS builder
+FROM docker.io/library/golang:1.27.1-alpine3.24 AS builder
 ARG PKG=github.com/pinax-network/external-dns-dnscaster-webhook
 ARG VERSION=dev
 ARG REVISION=dev
