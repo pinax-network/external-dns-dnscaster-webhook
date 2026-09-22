@@ -1,6 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: external-dns
+namespace: kube-system
 
 resources:
   - https://github.com/pinax-network/dnscaster-exporter//deploy/kustomize

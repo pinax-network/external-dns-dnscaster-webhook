@@ -3,14 +3,14 @@ kind: Kustomization
 
 configMapGenerator:
   - name: external-dns-dnscaster-dashboard
-    namespace: monitoring
+    namespace: kube-system
     options:
       labels:
         grafana_dashboard: "1"
     files:
       - ./dashboard.json
   - name: dnscaster-monitors-overview
-    namespace: monitoring
+    namespace: kube-system
     options:
       labels:
         grafana_dashboard: "1"
