@@ -12,6 +12,8 @@ sources:
   - crd
 registry: txt
 txtOwnerId: external-dns
+extraArgs:
+  enable-legacy-annotation-prefix: true
 domainFilters: ["dnstest.pinax.network"]
 excludeDomains: []
 policy: sync
