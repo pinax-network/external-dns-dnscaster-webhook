@@ -1,10 +1,10 @@
 grafana:
   adminUser: admin
   adminPassword: admin
-  defaultDashboardEnabled: false
+  defaultDashboardsEnabled: false
 
 prometheus:
   prometheusSpec:
     serviceMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelector: {}
-    serviceMonitorSelectorNamespaceSeclector: {}
+    serviceMonitorNamespaceSelector: {}

@@ -12,6 +12,10 @@ load('ext://helm_resource', 'helm_resource', 'helm_repo')
 
 k8s_yaml(local('wget -qO- https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml'))
 
+# Registry CRD for `registry: crd`. Helm only installs crds/ on first install, so
+# apply it here to keep `helm upgrade` on an existing release working.
+k8s_yaml(local('wget -qO- https://raw.githubusercontent.com/kubernetes-sigs/external-dns/v0.23.0/config/crd/standard/dnsrecords.externaldns.k8s.io.yaml'))
+
 ### Deploying cilium
 helm_repo(
     name="cilium-repo",
@@ -23,7 +27,7 @@ helm_resource(
     namespace="kube-system",
     flags=[
         '--values=./hack/cilium/values.yaml',
-        '--version=1.19.1',
+        '--version=1.20.2',
     ],
     resource_deps=['cilium-repo']
 )
@@ -43,10 +47,9 @@ helm_repo(
 helm_resource(
     name="monitoring-install",
     chart="monitoring/kube-prometheus-stack",
-    namespace="monitoring",
+    namespace="kube-system",
     resource_deps=['monitoring'],
     flags=[
-        '--create-namespace',
         '--values=./hack/monitoring/values.yaml',
     ],
 )
@@ -91,12 +94,14 @@ helm_repo(
 helm_resource(
     name="external-dns-install",
     chart="external-dns-repo/external-dns",
-    namespace="external-dns",
+    namespace="kube-system",
     flags=[
-        '--create-namespace',
         '--values=./hack/external-dns/values.yaml',
-        '--version=1.20.0',
+        '--version=1.22.0',
     ],
     image_deps=[IMG],
     image_keys=[('provider.webhook.image.repository', 'provider.webhook.image.tag')],
+    # serviceMonitor.enabled renders a ServiceMonitor, so the Prometheus Operator
+    # CRDs must be installed before this chart is rendered.
+    resource_deps=['monitoring-install'],
 )

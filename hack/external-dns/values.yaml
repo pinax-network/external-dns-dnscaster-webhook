@@ -1,6 +1,10 @@
 ---
 fullnameOverride: external-dns-dnscaster
 
+# Chart 1.22.0 still defaults to appVersion 0.22.0.
+image:
+  tag: v0.23.0
+
 logLevel: debug
 logFormat: text
 
@@ -10,8 +14,14 @@ sources:
   - ingress
   - service
   - crd
-registry: txt
+registry: crd
 txtOwnerId: external-dns
+# The crd registry stores DNSRecord objects in this namespace. It defaults to the
+# namespace external-dns runs in, but v0.23.0 made it independent of the source
+# namespace, so set it explicitly.
+extraArgs:
+  crd-registry-namespace: kube-system
+  enable-legacy-annotation-prefix: true
 domainFilters: ["dnstest.pinax.network"]
 excludeDomains: []
 policy: sync
