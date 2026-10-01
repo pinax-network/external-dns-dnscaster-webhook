@@ -97,7 +97,7 @@ helm_resource(
     namespace="kube-system",
     flags=[
         '--values=./hack/external-dns/values.yaml',
-        '--version=1.22.0',
+        '--version=1.23.0',
     ],
     image_deps=[IMG],
     image_keys=[('provider.webhook.image.repository', 'provider.webhook.image.tag')],
