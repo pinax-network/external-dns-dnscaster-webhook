@@ -1,10 +1,6 @@
 ---
 fullnameOverride: external-dns-dnscaster
 
-# Chart 1.22.0 still defaults to appVersion 0.22.0.
-image:
-  tag: v0.23.0
-
 logLevel: debug
 logFormat: text
 
@@ -21,7 +17,7 @@ txtOwnerId: external-dns
 # namespace, so set it explicitly.
 extraArgs:
   crd-registry-namespace: kube-system
-  enable-legacy-annotation-prefix: true
+  enable-legacy-annotation-prefix: true # Testing migration support
 domainFilters: ["dnstest.pinax.network"]
 excludeDomains: []
 policy: sync
