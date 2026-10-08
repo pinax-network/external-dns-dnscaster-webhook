@@ -1,17 +1,16 @@
-package dnscaster_test
+package dnscaster
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
 	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/plan"
-	"sigs.k8s.io/external-dns/provider"
 
-	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
-	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
@@ -19,551 +18,461 @@ func init() {
 	log.Init()
 }
 
-func TestDefaultTTLUsesRecordValueWhenConfigured(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-
-	fake.
-		WithZone("z-1", "example.com")
-
-	fake.OnCreateHost = func(host dnscaster.Host) error {
-		if host.TTL != 120 {
-			t.Fatalf("expected configured TTL 120, got %d", host.TTL)
-		}
-		return nil
-	}
-
-	changes := &plan.Changes{
-		Create: []*endpoint.Endpoint{
-			endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(120), "1.2.3.4"),
+// testProvider returns a provider for planning changes. Its client has no
+// HTTP client, so anything that would reach the API fails.
+func testProvider(domainFilter ...string) *DNScasterProvider {
+	return &DNScasterProvider{
+		client: &DNScasterApiClient{
+			DNScasterDefaults: &DNScasterDefaults{DefaultTTL: 600},
+			DNScasterConnectionConfig: &DNScasterConnectionConfig{
+				OwnerID:         "controller-1",
+				NameserverSetID: "ns-1",
+			},
 		},
-	}
-
-	if err := p.ApplyChanges(context.Background(), changes); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		domainFilter: endpoint.NewDomainFilterWithExclusions(domainFilter, nil),
 	}
 }
 
-func TestDefaultTTLFallsBackToProviderDefault(t *testing.T) {
-	t.Parallel()
+var testZones = []Zone{{ID: "z-1", Domain: "example.com"}}
 
-	p, fake := newTestProvider(t)
+// planCreate plans the creation of a single record.
+func planCreate(t *testing.T, p *DNScasterProvider, zones []Zone, record *endpoint.Endpoint) hostCreate {
+	t.Helper()
 
-	fake.
-		WithZone("z-1", "example.com")
-
-	fake.OnCreateHost = func(host dnscaster.Host) error {
-		if host.TTL != 600 {
-			t.Fatalf("expected configured TTL: 600, got: %d", host.TTL)
-		}
-		return nil
-	}
-
-	changes := &plan.Changes{
-		Create: []*endpoint.Endpoint{
-			endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
-		},
-	}
-
-	if err := p.ApplyChanges(context.Background(), changes); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-
-	fake.
-		WithZone("z-1", "example.com")
-
-	fake.OnCreateHost = func(host dnscaster.Host) error {
-		if host.Data != "1.2.3.4" {
-			t.Fatalf("expected first target to be 1.2.3.4, got: %s", host.Data)
-		}
-		if host.TTL != 450 {
-			t.Fatalf("expected configured TTL: %d, got: %d", 450, host.TTL)
-		}
-		return nil
-	}
-
-	changes := &plan.Changes{
-		Create: []*endpoint.Endpoint{
-			endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(450), "1.2.3.4", "5.6.7.8"),
-		},
-	}
-
-	if err := p.ApplyChanges(context.Background(), changes); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestTrimHostnameFromFQDN(t *testing.T) {
-	t.Parallel()
-
-	setup := func(t *testing.T) (provider.Provider, *dnscaster.FakeDNScasterClient) {
-		t.Helper()
-
-		config := configuration.Init()
-		config.DomainFilter = []string{"example.com", ".deep.example.com", "exact.example.net"}
-
-		p, fake := newTestProviderWithConfig(t, config, baseConnConfig(), baseDefaults())
-
-		fake.
-			WithZone("z-1", "example.com").
-			WithZone("z-2", "deep.example.com").
-			WithZone("z-3", "exact.example.net")
-
-		return p, fake
-	}
-
-	t.Run("testing suffix filter", func(t *testing.T) {
-		t.Parallel()
-
-		p, fake := setup(t)
-
-		fake.OnCreateHost = func(host dnscaster.Host) error {
-			if host.Hostname != "api" {
-				t.Fatalf("expected host.Hostname: api, got: %s", host.Hostname)
-			}
-			if host.FQDN != "api.example.com" {
-				t.Fatalf("expected host.FQDN: api.example.com, got: %s", host.FQDN)
-			}
-			if host.ZoneID != "z-1" {
-				t.Fatalf("expected host.ZoneID: z-1, got: %s", host.ZoneID)
-			}
-			return nil
-		}
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{
-				endpoint.NewEndpoint("api.example.com", "A", "1.2.3.4"),
-			},
-		}
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("testing dot-prefixed filter", func(t *testing.T) {
-		t.Parallel()
-
-		p, fake := setup(t)
-
-		fake.OnCreateHost = func(host dnscaster.Host) error {
-			if host.Hostname != "www" {
-				t.Fatalf("expected host.Hostname: www, got: %s", host.Hostname)
-			}
-			if host.FQDN != "www.deep.example.com" {
-				t.Fatalf("expected host.FQDN: www.deep.example.com, got: %s", host.FQDN)
-			}
-			if host.ZoneID != "z-2" {
-				t.Fatalf("expected host.ZoneID: z-2, got: %s", host.ZoneID)
-			}
-			return nil
-		}
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{
-				endpoint.NewEndpoint("www.deep.example.com", "A", "1.2.3.4"),
-			},
-		}
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("testing exact-zone apex filter", func(t *testing.T) {
-		t.Parallel()
-
-		p, fake := setup(t)
-
-		fake.OnCreateHost = func(host dnscaster.Host) error {
-			if host.Hostname != "" {
-				t.Fatalf("expected host.Hostname: '', got: %s", host.Hostname)
-			}
-			if host.FQDN != "exact.example.net" {
-				t.Fatalf("expected host.FQDN: exact.example.net, got: %s", host.FQDN)
-			}
-			if host.ZoneID != "z-3" {
-				t.Fatalf("expected host.ZoneID: z-3, got: %s", host.ZoneID)
-			}
-			return nil
-		}
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{
-				endpoint.NewEndpoint("exact.example.net", "A", "1.2.3.4"),
-			},
-		}
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("testing no match zone filter", func(t *testing.T) {
-		t.Parallel()
-
-		p, fake := setup(t)
-
-		fake.OnCreateHost = func(host dnscaster.Host) error {
-			if host.ZoneID != "" {
-				// This would actually raise an error on DNScaster's side without a zone_id
-				t.Fatalf("unexpected host.ZoneID, got: %v", host.ZoneID)
-			}
-			return nil
-		}
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{
-				endpoint.NewEndpoint("unmanaged.org", "A", "1.2.3.4"),
-			},
-		}
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestProviderWithoutDomainFilter(t *testing.T) {
-	t.Parallel()
-
-	config := configuration.Init()
-	config.DomainFilter = []string{}
-
-	p, fake := newTestProviderWithConfig(t, config, baseConnConfig(), baseDefaults())
-
-	fake.
-		WithZone("z-1", "api.example.com").
-		WithZone("z-2", "api.other.com")
-
-	changes := &plan.Changes{
-		Create: []*endpoint.Endpoint{
-			endpoint.NewEndpoint("api.example.com", "A", "1.2.3.4"),
-			endpoint.NewEndpoint("api.other.com", "A", "1.2.3.4"),
-		},
-	}
-	if err := p.ApplyChanges(context.Background(), changes); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if fake.Hosts["z-1"][0].FQDN != "api.example.com" {
-		t.Fatalf("expected FQDN: api.example.com, got: %s", fake.Hosts["z-1"][0].FQDN)
-	}
-	if fake.Hosts["z-2"][0].FQDN != "api.other.com" {
-		t.Fatalf("expected FQDN: api.other.com, got: %s", fake.Hosts["z-2"][0].FQDN)
-	}
-}
-
-func TestProviderRecords(t *testing.T) {
-	t.Parallel()
-
-	t.Run("should return nothing when no zone exist", func(t *testing.T) {
-		t.Parallel()
-		p, _ := newTestProvider(t)
-
-		records, err := p.Records(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error, got: %v", err)
-		}
-		if len(records) != 0 {
-			t.Fatalf("expected no records, got: %d", len(records))
-		}
-	})
-
-	t.Run("should return only records from managed zones", func(t *testing.T) {
-		p, fake := newTestProvider(t)
-
-		fake.
-			WithZone("z-1", "example.com").
-			WithZone("z-2", "other.com").
-			WithHost(dnscaster.Host{ZoneID: "z-1", ID: "h-1", FQDN: "app.example.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}}).
-			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-2", FQDN: "app.other.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}}).
-			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-3", FQDN: "other.example.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-2"}})
-
-		records, err := p.Records(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error, got: %v", err)
-		}
-		if len(records) != 1 {
-			t.Fatalf("expected 1 records, got: %d", len(records))
-		}
-	})
-
-	t.Run("should return records with provider annotations", func(t *testing.T) {
-		p, fake := newTestProvider(t)
-
-		fake.
-			WithZone("z-1", "example.com").
-			WithHost(dnscaster.Host{
-				ZoneID:      "z-1",
-				ID:          "h-1",
-				IPMonitorID: "m-1",
-				Data:        "1.2.3.4",
-				Hostname:    "api",
-				FQDN:        "api.example.com",
-				Properties: map[string]string{
-					dnscaster.ProviderMetadataOwnerID:                 "controller-1",
-					dnscaster.ProviderSpecificIPMonitorURI:            "https:/health",
-					dnscaster.ProviderSpecificIPMonitorTreatRedirects: "offline",
-				},
-			}).
-			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "https://1.2.3.4/health", TreatRedirects: "offline"})
-
-		records, err := p.Records(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error, got: %v", err)
-		}
-		if len(records) != 1 {
-			t.Fatalf("expected 1 records, got: %d", len(records))
-		}
-
-		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI)
-		if uri != "https:/health" {
-			t.Fatalf("expected provider annotation %s=https, got: %s", dnscaster.ProviderSpecificIPMonitorURI, uri)
-		}
-
-		redirects, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects)
-		if redirects != "offline" {
-			t.Fatalf("expected provider annotation %s=offline, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirects, redirects)
-		}
-	})
-
-	t.Run("should return records with default provider annotations", func(t *testing.T) {
-		p, fake := newTestProvider(t)
-
-		fake.
-			WithZone("z-1", "example.com").
-			WithHost(dnscaster.Host{
-				ZoneID:      "z-1",
-				ID:          "h-1",
-				IPMonitorID: "m-1",
-				Data:        "1.2.3.4",
-				Hostname:    "api",
-				FQDN:        "api.example.com",
-				Properties: map[string]string{
-					dnscaster.ProviderMetadataOwnerID:      "controller-1",
-					dnscaster.ProviderSpecificIPMonitorURI: "ping",
-				},
-			}).
-			WithMonitor(dnscaster.Monitor{NameserverSetID: "ns-1", ID: "m-1", URI: "ping://1.2.3.4", TreatRedirects: "online"})
-
-		records, err := p.Records(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error, got: %v", err)
-		}
-		if len(records) != 1 {
-			t.Fatalf("expected 1 records, got: %d", len(records))
-		}
-
-		uri, _ := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI)
-		if uri != "ping" {
-			t.Fatalf("expected provider annotation %s=ping, got: %s", dnscaster.ProviderSpecificIPMonitorURI, uri)
-		}
-
-		redirects, ok := records[0].GetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects)
-		if ok {
-			t.Fatalf("unexpected provider annotation %s, got: %s", dnscaster.ProviderSpecificIPMonitorTreatRedirects, redirects)
-		}
-	})
-
-	t.Run("should ignore owned records outside domain filter", func(t *testing.T) {
-		p, fake := newTestProvider(t)
-
-		fake.
-			WithHost(dnscaster.Host{ZoneID: "z-2", ID: "h-1", FQDN: "app.other.com", Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}})
-
-		records, err := p.Records(context.Background())
-		if err != nil {
-			t.Fatalf("unexpected error, got: %v", err)
-		}
-		if len(records) != 0 {
-			t.Fatalf("expected 0 records, got: %d", len(records))
-		}
-	})
-}
-
-func TestProviderApplyChanges(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-
-	fake.
-		WithZone("z-1", "example.com").
-		WithHost(dnscaster.Host{
-			ID:          "h-old",
-			ZoneID:      "z-1",
-			FQDN:        "app.example.com",
-			DNSType:     "A",
-			Data:        "1.2.3.4",
-			IPMonitorID: "m-old",
-			Properties:  map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
-		}).
-		WithMonitor(dnscaster.Monitor{ID: "m-old"})
-
-	fake.OnCreateHost = func(req dnscaster.Host) error {
-		if req.ZoneID != "z-1" {
-			t.Fatalf("expected zone_id=z-1, got %q", req.ZoneID)
-		}
-		if req.Hostname != "new" {
-			t.Fatalf("expected hostname=new, got %q", req.Hostname)
-		}
-		if req.IPMonitorID != "m-1" {
-			t.Fatalf("expected ip_monitor_id=m-1, got %q", req.IPMonitorID)
-		}
-		return nil
-	}
-	fake.OnDeleteHost = func(hostID string) error {
-		if hostID != "h-old" {
-			t.Fatalf("expected hostID=h-old, got %s", hostID)
-		}
-		return nil
-	}
-
-	fake.OnCreateMonitor = func(req dnscaster.Monitor) error {
-		if req.NameserverSetID != "ns-1" {
-			t.Fatalf("expected nameserver_set_id=ns-1, got %q", req.NameserverSetID)
-		}
-		if req.URI != "https://5.6.7.8" {
-			t.Fatalf("expected uri=https://5.6.7.8, got %q", req.URI)
-		}
-		if req.TreatRedirects != "" {
-			t.Fatalf("expected treat_redirects='', got %q", req.TreatRedirects)
-		}
-		return nil
-	}
-	fake.OnDeleteMonitor = func(monitorID string) error {
-		if monitorID != "m-old" {
-			t.Fatalf("expected monitorID=m-old, got %s", monitorID)
-		}
-		return nil
-	}
-
-	t.Run("reconcile records by deleting old ones and create new", func(t *testing.T) {
-		t.Parallel()
-
-		create := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-
-		changes := &plan.Changes{
-			Delete: []*endpoint.Endpoint{
-				endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
-			},
-			Create: []*endpoint.Endpoint{create},
-		}
-
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("should error when creating record with no target", func(t *testing.T) {
-		t.Parallel()
-
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{endpoint.NewEndpoint("no-target.example.com", "A")},
-		}
-
-		err := p.ApplyChanges(context.Background(), changes)
-		if err == nil {
-			t.Fatal("expected an error when no targets on record are set")
-		}
-		if !strings.Contains(err.Error(), "no target") {
-			t.Fatalf("expected no target error, got: %v", err)
-		}
-	})
-
-	t.Run("should error when deleting record with no target", func(t *testing.T) {
-		t.Parallel()
-
-		changes := &plan.Changes{
-			Delete: []*endpoint.Endpoint{endpoint.NewEndpoint("no-target.example.com", "A")},
-		}
-
-		err := p.ApplyChanges(context.Background(), changes)
-		if err == nil {
-			t.Fatal("expected an error when no targets on record are set")
-		}
-		if !strings.Contains(err.Error(), "no target") {
-			t.Fatalf("expected no target error, got: %v", err)
-		}
-	})
-}
-
-func TestProviderApplyChangesNoMonitors(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-
-	fake.
-		WithZone("z-1", "example.com")
-
-	fake.OnCreateMonitor = func(mon dnscaster.Monitor) error {
-		t.Fatalf("unexpected call to CreateMonitor()")
-		return nil
-	}
-
-	t.Run("should not create a monitor by default", func(t *testing.T) {
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{
-				endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
-			},
-		}
-
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("should not create a monitor for unsupported types", func(t *testing.T) {
-		create := endpoint.NewEndpoint("app.example.com", "CNAME", "target.example.com")
-		create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-
-		changes := &plan.Changes{
-			Create: []*endpoint.Endpoint{create},
-		}
-
-		if err := p.ApplyChanges(context.Background(), changes); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-}
-
-func TestRecordsReturnsHostsBeyondTheFirstPage(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-	fake.WithZone("z-1", "example.com")
-
-	// The API caps a list response at max_results records and reports the rest
-	// via more_results. Before paging was implemented the provider only ever saw
-	// the first page, so external-dns treated the remaining records as missing
-	// and recreated them on every reconcile.
-	const total = 250
-	for i := range total {
-		fake.WithHost(dnscaster.Host{
-			ID:         fmt.Sprintf("h-%04d", i),
-			ZoneID:     "z-1",
-			FQDN:       fmt.Sprintf("app-%04d.example.com", i),
-			Hostname:   fmt.Sprintf("app-%04d", i),
-			DNSType:    "A",
-			Data:       "1.2.3.4",
-			TTL:        300,
-			Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
-		})
-	}
-
-	records, err := p.Records(context.Background())
+	cs, err := p.newChangeSet(nil, []*endpoint.Endpoint{record}, zones, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(records) != total {
-		t.Fatalf("expected %d records, got %d", total, len(records))
+	if len(cs.deletes) != 0 || len(cs.creates) != 1 {
+		t.Fatalf("expected a single create, got %d deletes and %d creates", len(cs.deletes), len(cs.creates))
+	}
+	return cs.creates[0]
+}
+
+func TestPlanCreateTTL(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		record *endpoint.Endpoint
+		want   int64
+	}{
+		"configured on the record": {endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(120), "1.2.3.4"), 120},
+		"provider default":         {endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"), 600},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			create := planCreate(t, testProvider("example.com"), testZones, tc.record)
+			if create.host.TTL != tc.want {
+				t.Fatalf("expected TTL %d, got %d", tc.want, create.host.TTL)
+			}
+		})
+	}
+}
+
+func TestPlanCreateUsesFirstTarget(t *testing.T) {
+	t.Parallel()
+
+	record := endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(450), "1.2.3.4", "5.6.7.8")
+
+	create := planCreate(t, testProvider("example.com"), testZones, record)
+	if create.host.Data != "1.2.3.4" {
+		t.Fatalf("expected first target 1.2.3.4, got %s", create.host.Data)
+	}
+}
+
+func TestPlanCreateResolvesZoneAndHostname(t *testing.T) {
+	t.Parallel()
+
+	p := testProvider("example.com", ".deep.example.com", "exact.example.net")
+	zones := []Zone{
+		{ID: "z-1", Domain: "example.com"},
+		{ID: "z-2", Domain: "deep.example.com"},
+		{ID: "z-3", Domain: "exact.example.net"},
 	}
 
-	seen := make(map[string]bool, len(records))
-	for _, record := range records {
-		if seen[record.DNSName] {
-			t.Fatalf("record listed twice: %s", record.DNSName)
+	for name, tc := range map[string]struct {
+		fqdn, hostname, zoneID string
+	}{
+		"suffix filter":      {"api.example.com", "api", "z-1"},
+		"dot-prefixed":       {"www.deep.example.com", "www", "z-2"},
+		"exact-zone apex":    {"exact.example.net", "", "z-3"},
+		"no matching filter": {"unmanaged.org", "", ""}, // DNScaster rejects a host without a zone
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			create := planCreate(t, p, zones, endpoint.NewEndpoint(tc.fqdn, "A", "1.2.3.4"))
+			if create.host.FQDN != tc.fqdn {
+				t.Fatalf("expected fqdn %q, got %q", tc.fqdn, create.host.FQDN)
+			}
+			if create.host.Hostname != tc.hostname {
+				t.Fatalf("expected hostname %q, got %q", tc.hostname, create.host.Hostname)
+			}
+			if create.host.ZoneID != tc.zoneID {
+				t.Fatalf("expected zone_id %q, got %q", tc.zoneID, create.host.ZoneID)
+			}
+		})
+	}
+}
+
+func TestPlanCreateWithoutDomainFilter(t *testing.T) {
+	t.Parallel()
+
+	p := testProvider()
+	zones := []Zone{
+		{ID: "z-1", Domain: "api.example.com"},
+		{ID: "z-2", Domain: "api.other.com"},
+	}
+
+	cs, err := p.newChangeSet(nil, []*endpoint.Endpoint{
+		endpoint.NewEndpoint("api.example.com", "A", "1.2.3.4"),
+		endpoint.NewEndpoint("api.other.com", "A", "1.2.3.4"),
+	}, zones, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got []string
+	for _, create := range cs.creates {
+		got = append(got, create.host.ZoneID+" "+create.host.FQDN)
+	}
+	if want := []string{"z-1 api.example.com", "z-2 api.other.com"}; !slices.Equal(got, want) {
+		t.Fatalf("unexpected hosts: got %v, want %v", got, want)
+	}
+}
+
+func TestPlanCreateSetsProperties(t *testing.T) {
+	t.Parallel()
+
+	record := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+	record.SetIdentifier = "blue"
+	record.SetProviderSpecificProperty(ProviderSpecificLabelPrefix+"registry~1name", "mainnet")
+
+	create := planCreate(t, testProvider("example.com"), testZones, record)
+
+	// The owner property is what ListHosts filters on: a host without it is
+	// invisible to Records.
+	want := map[string]string{
+		ProviderMetadataOwnerID:       "controller-1",
+		ProviderMetadataSetIdentifier: "blue",
+		"registry/name":               "mainnet",
+	}
+	for key, value := range want {
+		if got := create.host.Properties[key]; got != value {
+			t.Fatalf("expected property %s=%q, got %q (all: %v)", key, value, got, create.host.Properties)
 		}
-		seen[record.DNSName] = true
+	}
+}
+
+func TestPlanCreateMonitor(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		annotations map[string]string
+		want        Monitor
+	}{
+		"scheme only": {
+			annotations: map[string]string{ProviderSpecificIPMonitorURI: "ping"},
+			want:        Monitor{URI: "ping://5.6.7.8", Hostname: "new.example.com"},
+		},
+		"path without host": {
+			annotations: map[string]string{ProviderSpecificIPMonitorURI: "https:/health"},
+			want:        Monitor{URI: "https://5.6.7.8/health", Hostname: "new.example.com"},
+		},
+		"full URI": {
+			annotations: map[string]string{
+				ProviderSpecificIPMonitorURI:            "https://1.1.1.1/health",
+				ProviderSpecificIPMonitorTreatRedirects: "offline",
+			},
+			want: Monitor{URI: "https://1.1.1.1/health", Hostname: "new.example.com", TreatRedirects: "offline"},
+		},
+		"different hostname": {
+			annotations: map[string]string{
+				ProviderSpecificIPMonitorURI:            "https://1.1.1.1/health",
+				ProviderSpecificIPMonitorHostname:       "api.other.com",
+				ProviderSpecificIPMonitorTreatRedirects: "offline",
+			},
+			want: Monitor{URI: "https://1.1.1.1/health", Hostname: "api.other.com", TreatRedirects: "offline"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			record := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
+			for key, value := range tc.annotations {
+				record.SetProviderSpecificProperty(key, value)
+			}
+
+			create := planCreate(t, testProvider("example.com"), testZones, record)
+			if create.monitor == nil {
+				t.Fatal("expected a monitor")
+			}
+
+			got := *create.monitor
+			if got.URI != tc.want.URI || got.Hostname != tc.want.Hostname || got.TreatRedirects != tc.want.TreatRedirects {
+				t.Fatalf("unexpected monitor: got uri=%q hostname=%q treat_redirects=%q, want uri=%q hostname=%q treat_redirects=%q",
+					got.URI, got.Hostname, got.TreatRedirects, tc.want.URI, tc.want.Hostname, tc.want.TreatRedirects)
+			}
+			if got.Name != "new.example.com" || got.NameserverSetID != "ns-1" {
+				t.Fatalf("unexpected monitor name=%q nameserver_set_id=%q", got.Name, got.NameserverSetID)
+			}
+			if create.host.ZoneID != "z-1" || create.host.Hostname != "new" {
+				t.Fatalf("unexpected host zone_id=%q hostname=%q", create.host.ZoneID, create.host.Hostname)
+			}
+		})
+	}
+}
+
+func TestPlanCreateWithoutMonitor(t *testing.T) {
+	t.Parallel()
+
+	cname := endpoint.NewEndpoint("app.example.com", "CNAME", "target.example.com")
+	cname.SetProviderSpecificProperty(ProviderSpecificIPMonitorURI, "https")
+
+	for name, record := range map[string]*endpoint.Endpoint{
+		"no monitor annotation": endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
+		"unsupported type":      cname,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if create := planCreate(t, testProvider("example.com"), testZones, record); create.monitor != nil {
+				t.Fatalf("unexpected monitor: %+v", *create.monitor)
+			}
+		})
+	}
+}
+
+func TestPlanDeleteResolvesExistingHosts(t *testing.T) {
+	t.Parallel()
+
+	hosts := []Host{
+		{ID: "h-a", FQDN: "app.example.com", DNSType: "A", Data: "1.2.3.4", IPMonitorID: "m-a"},
+		{ID: "h-b", FQDN: "app.example.com", DNSType: "A", Data: "5.6.7.8"},
+		{ID: "h-txt", FQDN: "app.example.com", DNSType: "TXT", Data: "heritage=external-dns"},
+	}
+
+	cs, err := testProvider("example.com").newChangeSet([]*endpoint.Endpoint{
+		endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
+		endpoint.NewEndpoint("app.example.com", "TXT", `"heritage=external-dns"`),
+		endpoint.NewEndpoint("gone.example.com", "A", "1.2.3.4"),
+	}, nil, nil, hosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The record without a host is skipped: there is nothing to delete.
+	if len(cs.deletes) != 2 || cs.deletes[0].ID != "h-a" || cs.deletes[1].ID != "h-txt" {
+		t.Fatalf("unexpected deletes: %+v", cs.deletes)
+	}
+	if cs.deletes[0].IPMonitorID != "m-a" {
+		t.Fatalf("expected the host's monitor to be deleted with it, got %q", cs.deletes[0].IPMonitorID)
+	}
+}
+
+func TestPlanRejectsRecordsWithoutTarget(t *testing.T) {
+	t.Parallel()
+
+	noTarget := []*endpoint.Endpoint{endpoint.NewEndpoint("no-target.example.com", "A")}
+
+	for name, changes := range map[string]*plan.Changes{
+		"create": {Create: noTarget},
+		"delete": {Delete: noTarget},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := testProvider("example.com").newChangeSet(slices.Concat(changes.UpdateOld, changes.Delete), changes.Create, testZones, nil)
+			if err == nil || !strings.Contains(err.Error(), "no target") {
+				t.Fatalf("expected a no target error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestRecordsForHosts(t *testing.T) {
+	t.Parallel()
+
+	hosts := []Host{
+		{
+			ID: "h-1", FQDN: "api.example.com", DNSType: "A", Data: "1.2.3.4", TTL: 300, IPMonitorID: "m-1",
+			Properties: map[string]string{
+				ProviderMetadataOwnerID:                 "controller-1",
+				ProviderMetadataSetIdentifier:           "blue",
+				ProviderSpecificIPMonitorURI:            "https:/health",
+				ProviderSpecificIPMonitorTreatRedirects: "offline",
+				"registry/name":                         "mainnet",
+			},
+		},
+		{ID: "h-2", FQDN: "app.other.com", DNSType: "A", Data: "1.2.3.4"},
+	}
+
+	records := testProvider("example.com").recordsForHosts(hosts)
+	if len(records) != 1 {
+		t.Fatalf("expected only the record in the managed domain, got %d", len(records))
+	}
+
+	record := records[0]
+	if record.DNSName != "api.example.com" || record.RecordType != "A" || record.RecordTTL != 300 || !slices.Equal(record.Targets, endpoint.Targets{"1.2.3.4"}) {
+		t.Fatalf("unexpected record: %v", record)
+	}
+	if record.SetIdentifier != "blue" {
+		t.Fatalf("expected set identifier blue, got %q", record.SetIdentifier)
+	}
+
+	want := map[string]string{
+		ProviderSpecificIPMonitorURI:                   "https:/health",
+		ProviderSpecificIPMonitorTreatRedirects:        "offline",
+		ProviderSpecificLabelPrefix + "registry~1name": "mainnet",
+	}
+	for name, value := range want {
+		if got, ok := record.GetProviderSpecificProperty(name); !ok || got != value {
+			t.Fatalf("expected provider-specific %s=%q, got %q (all: %v)", name, value, got, record.ProviderSpecific)
+		}
+	}
+	if len(record.ProviderSpecific) != len(want) {
+		t.Fatalf("unexpected provider-specific properties: %v", record.ProviderSpecific)
+	}
+}
+
+// stubAPI answers each request with a canned response for its method and path,
+// and records the requests it gets. It keeps no state between requests.
+type stubAPI struct {
+	t         *testing.T
+	responses map[string]*http.Response
+	requests  []string
+	bodies    map[string]string
+}
+
+func newStubAPI(t *testing.T, responses map[string]*http.Response) *stubAPI {
+	return &stubAPI{t: t, responses: responses, bodies: make(map[string]string)}
+}
+
+func (s *stubAPI) RoundTrip(req *http.Request) (*http.Response, error) {
+	call := req.Method + " " + req.URL.Path
+	s.requests = append(s.requests, call)
+
+	if req.Body != nil {
+		body, _ := io.ReadAll(req.Body)
+		s.bodies[call] = string(body)
+	}
+
+	resp, ok := s.responses[call]
+	if !ok {
+		s.t.Errorf("unexpected request: %s", call)
+		return jsonResponse(http.StatusNotFound, "", nil), nil
+	}
+	return resp, nil
+}
+
+func (s *stubAPI) provider(dryRun bool) *DNScasterProvider {
+	p := testProvider("example.com")
+	p.client.Client = &http.Client{Transport: s}
+	p.dryRun = dryRun
+	return p
+}
+
+func TestApplyChangesOnlyReadsInDryRun(t *testing.T) {
+	t.Parallel()
+
+	create := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
+	create.SetProviderSpecificProperty(ProviderSpecificIPMonitorURI, "https")
+
+	changes := &plan.Changes{
+		Create:    []*endpoint.Endpoint{create},
+		UpdateOld: []*endpoint.Endpoint{endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")},
+		UpdateNew: []*endpoint.Endpoint{endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(60), "1.2.3.4")},
+	}
+
+	reads := func() map[string]*http.Response {
+		return map[string]*http.Response{
+			"GET /v1/hosts/": jsonResponse(http.StatusOK, `{"collection":[{"id":"h-1","fqdn":"app.example.com","dns_type":"A","data":"1.2.3.4","ip_monitor_id":"m-1"}],"more_results":false}`, nil),
+			"GET /v1/zones/": jsonResponse(http.StatusOK, `{"collection":[{"id":"z-1","domain":"example.com"}],"more_results":false}`, nil),
+		}
+	}
+
+	t.Run("dry run", func(t *testing.T) {
+		t.Parallel()
+
+		api := newStubAPI(t, reads())
+		if err := api.provider(true).ApplyChanges(context.Background(), changes); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := []string{"GET /v1/hosts/", "GET /v1/zones/"}; !slices.Equal(api.requests, want) {
+			t.Fatalf("unexpected requests: got %v, want %v", api.requests, want)
+		}
+	})
+
+	t.Run("real run", func(t *testing.T) {
+		t.Parallel()
+
+		responses := reads()
+		responses["DELETE /v1/hosts/h-1"] = jsonResponse(http.StatusAccepted, "", nil)
+		responses["DELETE /v1/ip_monitors/m-1"] = jsonResponse(http.StatusAccepted, "", nil)
+		responses["POST /v1/ip_monitors/"] = jsonResponse(http.StatusCreated, `{"id":"m-2"}`, nil)
+		responses["POST /v1/hosts/"] = jsonResponse(http.StatusCreated, `{"id":"h-2"}`, nil)
+
+		api := newStubAPI(t, responses)
+		if err := api.provider(false).ApplyChanges(context.Background(), changes); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		want := []string{
+			"GET /v1/hosts/", "GET /v1/zones/",
+			// The update's old host goes first, and its monitor after it.
+			"DELETE /v1/hosts/h-1", "DELETE /v1/ip_monitors/m-1",
+			"POST /v1/ip_monitors/", "POST /v1/hosts/",
+			"POST /v1/hosts/",
+		}
+		if !slices.Equal(api.requests, want) {
+			t.Fatalf("unexpected requests: got %v, want %v", api.requests, want)
+		}
+	})
+}
+
+func TestExecuteLinksMonitorToHost(t *testing.T) {
+	t.Parallel()
+
+	api := newStubAPI(t, map[string]*http.Response{
+		"POST /v1/ip_monitors/": jsonResponse(http.StatusCreated, `{"id":"m-new"}`, nil),
+		"POST /v1/hosts/":       jsonResponse(http.StatusCreated, `{"id":"h-new"}`, nil),
+	})
+
+	cs := changeSet{creates: []hostCreate{{
+		host:    Host{FQDN: "new.example.com", DNSType: "A", Data: "5.6.7.8"},
+		monitor: &Monitor{Name: "new.example.com"},
+	}}}
+	if err := api.provider(false).execute(context.Background(), cs); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if want := []string{"POST /v1/ip_monitors/", "POST /v1/hosts/"}; !slices.Equal(api.requests, want) {
+		t.Fatalf("unexpected requests: got %v, want %v", api.requests, want)
+	}
+	if body := api.bodies["POST /v1/hosts/"]; !strings.Contains(body, `"ip_monitor_id":"m-new"`) {
+		t.Fatalf("expected the host to use the new monitor, got body: %s", body)
+	}
+}
+
+func TestExecuteRemovesMonitorWhenHostCreateFails(t *testing.T) {
+	t.Parallel()
+
+	api := newStubAPI(t, map[string]*http.Response{
+		"POST /v1/ip_monitors/":        jsonResponse(http.StatusCreated, `{"id":"m-new"}`, nil),
+		"POST /v1/hosts/":              jsonResponse(http.StatusUnprocessableEntity, `{"message":"Validation failed","errors":["Zone is required."]}`, nil),
+		"DELETE /v1/ip_monitors/m-new": jsonResponse(http.StatusAccepted, "", nil),
+	})
+
+	cs := changeSet{creates: []hostCreate{{
+		host:    Host{FQDN: "new.example.com", DNSType: "A", Data: "5.6.7.8"},
+		monitor: &Monitor{Name: "new.example.com"},
+	}}}
+	if err := api.provider(false).execute(context.Background(), cs); err == nil {
+		t.Fatal("expected the host create error")
+	}
+
+	if want := []string{"POST /v1/ip_monitors/", "POST /v1/hosts/", "DELETE /v1/ip_monitors/m-new"}; !slices.Equal(api.requests, want) {
+		t.Fatalf("unexpected requests: got %v, want %v", api.requests, want)
 	}
 }

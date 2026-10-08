@@ -17,6 +17,7 @@ type Config struct {
 	ExcludeDomains       []string      `env:"EXCLUDE_DOMAIN_FILTER" envDefault:""`
 	RegexDomainFilter    string        `env:"REGEXP_DOMAIN_FILTER" envDefault:""`
 	RegexDomainExclusion string        `env:"REGEXP_DOMAIN_FILTER_EXCLUSION" envDefault:""`
+	DryRun               bool          `env:"DRY_RUN" envDefault:"false"`
 }
 
 func Init() Config {

@@ -22,6 +22,7 @@ func TestInitDefaults(t *testing.T) {
 	assert.Equal(t, []string(nil), cfg.ExcludeDomains)
 	assert.Equal(t, "", cfg.RegexDomainFilter)
 	assert.Equal(t, "", cfg.RegexDomainExclusion)
+	assert.False(t, cfg.DryRun)
 }
 
 func TestInitWithEnvVariables(t *testing.T) {
@@ -34,6 +35,7 @@ func TestInitWithEnvVariables(t *testing.T) {
 	t.Setenv("EXCLUDE_DOMAIN_FILTER", "exclude.com,exclude.org")
 	t.Setenv("REGEXP_DOMAIN_FILTER", ".*\\.example\\.com")
 	t.Setenv("REGEXP_DOMAIN_FILTER_EXCLUSION", ".*\\.exclude\\.com")
+	t.Setenv("DRY_RUN", "true")
 
 	cfg := Init()
 
@@ -45,4 +47,5 @@ func TestInitWithEnvVariables(t *testing.T) {
 	assert.Equal(t, []string{"exclude.com", "exclude.org"}, cfg.ExcludeDomains)
 	assert.Equal(t, ".*\\.example\\.com", cfg.RegexDomainFilter)
 	assert.Equal(t, ".*\\.exclude\\.com", cfg.RegexDomainExclusion)
+	assert.True(t, cfg.DryRun)
 }

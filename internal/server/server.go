@@ -35,15 +35,19 @@ func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.Server) {
-	mainRouter := chi.NewRouter()
-	mainRouter.Use(metrics.NewMetricsMiddleware(metrics.Get()).Handler)
-	mainRouter.Get("/", p.Negotiate)
-	mainRouter.Get("/records", p.Records)
-	mainRouter.Post("/records", p.ApplyChanges)
-	mainRouter.Post("/adjustendpoints", p.AdjustEndpoints)
+// NewRouter returns the handler serving the external-dns webhook API.
+func NewRouter(p *webhook.Webhook) http.Handler {
+	router := chi.NewRouter()
+	router.Use(metrics.NewMetricsMiddleware(metrics.Get()).Handler)
+	router.Get("/", p.Negotiate)
+	router.Get("/records", p.Records)
+	router.Post("/records", p.ApplyChanges)
+	router.Post("/adjustendpoints", p.AdjustEndpoints)
+	return router
+}
 
-	mainServer := createHTTPServer(fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort), mainRouter, config.ServerReadTimeout, config.ServerWriteTimeout)
+func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.Server) {
+	mainServer := createHTTPServer(fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort), NewRouter(p), config.ServerReadTimeout, config.ServerWriteTimeout)
 	go func() {
 		log.Info("init server", "starting server on addr", mainServer.Addr)
 		if err := mainServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -3,6 +3,8 @@ package dnscaster
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"sigs.k8s.io/external-dns/endpoint"
@@ -18,6 +20,7 @@ type DNScasterProvider struct {
 
 	client       *DNScasterApiClient
 	domainFilter *endpoint.DomainFilter
+	dryRun       bool
 }
 
 type hostKey struct {
@@ -30,28 +33,28 @@ type hostsMap = map[hostKey]Host
 
 type zonesMap = map[string]string
 
-// NewDNScasterProvider initializes a new DNSProvider, of the Dnscaster variety
-func NewDNScasterProvider(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, config *DNScasterConnectionConfig) (provider.Provider, error) {
+// NewDNScasterProvider initializes a new DNSProvider, of the Dnscaster variety.
+// In dry-run mode the provider still reads from the API, but changes are
+// logged instead of being sent.
+func NewDNScasterProvider(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, config *DNScasterConnectionConfig, dryRun bool) (provider.Provider, error) {
 	// Create the Dnscaster API Client
 	client, err := NewDNScasterClient(config, defaults)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the Dnscaster client: %w", err)
 	}
 
+	if dryRun {
+		log.Info("dry run enabled: changes are logged instead of being sent to DNScaster")
+	}
+
 	// If the client connects properly, create the DNS Provider
 	p := &DNScasterProvider{
 		client:       client,
 		domainFilter: domainFilter,
+		dryRun:       dryRun,
 	}
 
 	return p, nil
-}
-
-func NewDNScasterProviderWithClient(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, client *DNScasterApiClient) (provider.Provider, error) {
-	return &DNScasterProvider{
-		domainFilter: domainFilter,
-		client:       client,
-	}, nil
 }
 
 func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
@@ -59,144 +62,250 @@ func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 	if err != nil {
 		return nil, err
 	}
+	return p.recordsForHosts(hosts), nil
+}
 
+// recordsForHosts returns the endpoints of the hosts in managed domains.
+func (p *DNScasterProvider) recordsForHosts(hosts []Host) []*endpoint.Endpoint {
 	records := make([]*endpoint.Endpoint, 0, len(hosts))
 	for _, host := range hosts {
 		if p.domainFilter.Match(host.FQDN) {
 			records = append(records, p.endpointForHost(host))
 		}
 	}
-	return records, nil
+	return records
 }
 
+// ApplyChanges works out every API call the changes need before sending any
+// of them. In dry-run mode those calls are logged instead, so only the reads
+// needed to work them out reach the API.
 func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
-	zonesMap := make(zonesMap)
-	hostsMap := make(hostsMap)
-
-	// Process deletions (records to update will be deleted and recreated later)
-	for _, record := range append(changes.UpdateOld, changes.Delete...) {
-		if err := p.applyDelete(ctx, record, hostsMap); err != nil {
-			return err
-		}
+	cs, err := p.planChanges(ctx, changes)
+	if err != nil {
+		return err
 	}
 
-	// Process creates (updated records are recreated here)
-	for _, record := range append(changes.Create, changes.UpdateNew...) {
-		if err := p.applyCreate(ctx, record, zonesMap); err != nil {
-			return err
-		}
+	if p.dryRun {
+		cs.logDryRun()
+		return nil
 	}
-
-	return nil
+	return p.execute(ctx, cs)
 }
 
-func (p *DNScasterProvider) zonesMap(ctx context.Context) (zonesMap, error) {
-	zones, err := p.client.ListZones(ctx)
-	if err != nil {
-		return nil, err
+// changeSet holds the API calls that apply a set of changes. An update is a
+// delete of the old host followed by a create of the new one.
+type changeSet struct {
+	deletes []Host
+	creates []hostCreate
+}
+
+// hostCreate is a host to create, along with the IP monitor to create before
+// it. The monitor's ID only exists once it has been created, so it is set on
+// the host when the change set is executed.
+type hostCreate struct {
+	host    Host
+	monitor *Monitor
+}
+
+// planChanges reads the hosts and zones the changes refer to and works out the
+// API calls that apply them. It only reads from the API.
+func (p *DNScasterProvider) planChanges(ctx context.Context, changes *plan.Changes) (changeSet, error) {
+	deletes := slices.Concat(changes.UpdateOld, changes.Delete)
+	creates := slices.Concat(changes.Create, changes.UpdateNew)
+
+	var hosts []Host
+	if len(deletes) > 0 {
+		var err error
+		if hosts, err = p.client.ListHosts(ctx); err != nil {
+			return changeSet{}, err
+		}
+	}
+
+	var zones []Zone
+	if len(creates) > 0 {
+		var err error
+		if zones, err = p.client.ListZones(ctx); err != nil {
+			return changeSet{}, err
+		}
+	}
+
+	return p.newChangeSet(deletes, creates, zones, hosts)
+}
+
+// newChangeSet maps the records to delete and create onto API calls, given the
+// existing hosts and the zones.
+func (p *DNScasterProvider) newChangeSet(deletes, creates []*endpoint.Endpoint, zones []Zone, hosts []Host) (changeSet, error) {
+	var cs changeSet
+
+	existing := make(hostsMap, len(hosts))
+	for _, h := range hosts {
+		existing[hostKey{FQDN: h.FQDN, Type: h.DNSType, Target: h.Data}] = h
+	}
+
+	for _, record := range deletes {
+		if len(record.Targets) == 0 {
+			return changeSet{}, fmt.Errorf("no target set on record: %v", record)
+		}
+		log.Debug("planDelete", "record", record)
+
+		hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
+		host, ok := existing[hk]
+		if !ok {
+			// There is nothing to delete, and without a host ID the request
+			// would target the hosts collection itself.
+			log.Warn("no host found for record to delete, skipping", "record", record)
+			continue
+		}
+		cs.deletes = append(cs.deletes, host)
 	}
 
 	managedZones, err := p.filterManagedZones(zones)
 	if err != nil {
-		return nil, err
+		return changeSet{}, err
 	}
 
-	zonesMap := make(zonesMap, len(managedZones))
+	zoneIDs := make(zonesMap, len(managedZones))
 	for _, zone := range managedZones {
-		zonesMap[zone.Domain] = zone.ID
+		zoneIDs[zone.Domain] = zone.ID
 	}
-	return zonesMap, nil
+
+	for _, record := range creates {
+		create, err := p.hostToCreate(record, zoneIDs)
+		if err != nil {
+			return changeSet{}, err
+		}
+		cs.creates = append(cs.creates, create)
+	}
+
+	return cs, nil
 }
 
-// GetDomainFilter returns the domain filter for the provider.
-func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
-	return p.domainFilter
-}
-
-func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zonesMap zonesMap) error {
+func (p *DNScasterProvider) hostToCreate(record *endpoint.Endpoint, zoneIDs zonesMap) (hostCreate, error) {
 	if len(record.Targets) == 0 {
-		return fmt.Errorf("no target set on record: %v", record)
+		return hostCreate{}, fmt.Errorf("no target set on record: %v", record)
 	}
-	log.Debug("applyCreate", "record", record)
+	log.Debug("planCreate", "record", record)
 
 	host := p.hostsForEndpoint(record)
 	p.applyOwnerProperty(host.Properties)
 	hostname, zone := p.trimHostnameFromFQDN(record)
-
-	zoneID, ok := zonesMap[zone]
-	if !ok {
-		zones, err := p.client.ListZones(ctx)
-		if err != nil {
-			return err
-		}
-
-		managedZones, err := p.filterManagedZones(zones)
-		if err != nil {
-			return err
-		}
-
-		for _, zone := range managedZones {
-			zonesMap[zone.Domain] = zone.ID
-		}
-
-		// Set the zoneID now that the map is populated
-		zoneID = zonesMap[zone]
-	}
-
 	host.Hostname = hostname
-	host.ZoneID = zoneID
+	host.ZoneID = zoneIDs[zone]
 
-	monitor, err := p.createMonitorForHost(ctx, host)
+	monitor, err := p.monitorForHost(host)
 	if err != nil {
-		return err
+		return hostCreate{}, err
 	}
-	host.IPMonitorID = monitor.ID
 
 	if record.SetIdentifier != "" {
 		host.Properties[ProviderMetadataSetIdentifier] = record.SetIdentifier
 	}
 
-	_, err = p.client.CreateHost(ctx, host)
-	if err != nil && monitor.ID != "" {
-		_ = p.client.DeleteMonitor(ctx, monitor.ID)
-	}
-	return err
+	return hostCreate{host: host, monitor: monitor}, nil
 }
 
-func (p *DNScasterProvider) applyDelete(ctx context.Context, record *endpoint.Endpoint, hostsMap hostsMap) error {
-	if len(record.Targets) == 0 {
-		return fmt.Errorf("no target set on record: %v", record)
+// monitorForHost returns the IP monitor to create for a host, or nil when the
+// host does not ask for one.
+func (p *DNScasterProvider) monitorForHost(host Host) (*Monitor, error) {
+	if host.DNSType != "A" && host.DNSType != "AAAA" {
+		return nil, nil
 	}
-	log.Debug("applyDelete", "record", record)
 
-	hk := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
-	host, ok := hostsMap[hk]
+	uri, ok := host.Properties[ProviderSpecificIPMonitorURI]
 	if !ok {
-		hosts, err := p.client.ListHosts(ctx)
-		if err != nil {
+		return nil, nil
+	}
+
+	hostname := host.Properties[ProviderSpecificIPMonitorHostname]
+	if hostname == "" {
+		hostname = host.FQDN
+	}
+
+	u, err := formatURI(uri, host.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Monitor{
+		Name:            host.FQDN,
+		URI:             u,
+		Hostname:        hostname,
+		TreatRedirects:  host.Properties[ProviderSpecificIPMonitorTreatRedirects],
+		NameserverSetID: p.client.NameserverSetID,
+		// A copy, so properties added to the host afterwards stay off the monitor.
+		Properties: maps.Clone(host.Properties),
+	}, nil
+}
+
+// execute sends the API calls of a change set: every delete, then every create.
+func (p *DNScasterProvider) execute(ctx context.Context, cs changeSet) error {
+	for _, host := range cs.deletes {
+		if err := p.client.DeleteHost(ctx, host.ID); err != nil {
 			return err
 		}
 
-		for _, h := range hosts {
-			hk := hostKey{FQDN: h.FQDN, Type: h.DNSType, Target: h.Data}
-			hostsMap[hk] = h
+		// Deleting needs to happen after the host using it has been removed
+		if host.IPMonitorID != "" {
+			if err := p.client.DeleteMonitor(ctx, host.IPMonitorID); err != nil {
+				return err
+			}
 		}
-
-		// Set the host now that the map is populated
-		host = hostsMap[hk]
 	}
 
-	if err := p.client.DeleteHost(ctx, host.ID); err != nil {
-		return err
-	}
-
-	// Deleting needs to happen after the host using it has been removed
-	if host.IPMonitorID != "" {
-		if err := p.client.DeleteMonitor(ctx, host.IPMonitorID); err != nil {
+	for _, create := range cs.creates {
+		if err := p.createHost(ctx, create); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// createHost creates the host's IP monitor, if it has one, then the host using
+// it. The monitor is removed again if the host cannot be created.
+func (p *DNScasterProvider) createHost(ctx context.Context, create hostCreate) error {
+	host := create.host
+	if create.monitor != nil {
+		monitor, err := p.client.CreateMonitor(ctx, *create.monitor)
+		if err != nil {
+			return err
+		}
+		host.IPMonitorID = monitor.ID
+	}
+
+	_, err := p.client.CreateHost(ctx, host)
+	if err != nil && host.IPMonitorID != "" {
+		_ = p.client.DeleteMonitor(ctx, host.IPMonitorID)
+	}
+	return err
+}
+
+// logDryRun reports the API calls the change set would make.
+func (cs changeSet) logDryRun() {
+	for _, host := range cs.deletes {
+		log.Info("dry run: would delete host",
+			"host.id", host.ID, "fqdn", host.FQDN, "type", host.DNSType, "data", host.Data)
+		if host.IPMonitorID != "" {
+			log.Info("dry run: would delete IP monitor", "monitor.id", host.IPMonitorID, "fqdn", host.FQDN)
+		}
+	}
+
+	for _, create := range cs.creates {
+		if m := create.monitor; m != nil {
+			log.Info("dry run: would create IP monitor",
+				"name", m.Name, "uri", m.URI, "hostname", m.Hostname,
+				"treat_redirects", m.TreatRedirects, "nameserver_set_id", m.NameserverSetID)
+		}
+
+		h := create.host
+		log.Info("dry run: would create host",
+			"fqdn", h.FQDN, "type", h.DNSType, "data", h.Data, "ttl", h.TTL,
+			"zone_id", h.ZoneID, "hostname", h.Hostname, "properties", h.Properties)
+	}
+}
+
+// GetDomainFilter returns the domain filter for the provider.
+func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
+	return p.domainFilter
 }
 
 func (p *DNScasterProvider) filterManagedZones(zones []Zone) ([]Zone, error) {
@@ -244,41 +353,6 @@ func (p *DNScasterProvider) endpointForHost(host Host) *endpoint.Endpoint {
 
 	log.Debug("endpointFromHost", "endpoint", endpoint)
 	return endpoint
-}
-
-func (p *DNScasterProvider) createMonitorForHost(ctx context.Context, host Host) (Monitor, error) {
-	if host.DNSType != "A" && host.DNSType != "AAAA" {
-		return Monitor{}, nil
-	}
-
-	uri, ok := host.Properties[ProviderSpecificIPMonitorURI]
-	if !ok {
-		return Monitor{}, nil
-	}
-
-	hostname := host.Properties[ProviderSpecificIPMonitorHostname]
-	if hostname == "" {
-		hostname = host.FQDN
-	}
-
-	u, err := formatURI(uri, host.Data)
-	if err != nil {
-		return Monitor{}, err
-	}
-
-	monitor, err := p.client.CreateMonitor(ctx, Monitor{
-		Name:            host.FQDN,
-		URI:             u,
-		Hostname:        hostname,
-		TreatRedirects:  host.Properties[ProviderSpecificIPMonitorTreatRedirects],
-		NameserverSetID: p.client.NameserverSetID,
-		Properties:      host.Properties,
-	})
-	if err != nil {
-		return Monitor{}, err
-	}
-
-	return monitor, nil
 }
 
 func (p *DNScasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {

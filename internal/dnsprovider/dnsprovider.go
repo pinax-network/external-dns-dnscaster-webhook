@@ -28,19 +28,7 @@ func Init(config configuration.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("reading dnscaster defaults failed: %v", err)
 	}
 
-	return dnscaster.NewDNScasterProvider(domainFilter, &dnscasterDefaults, &dnscasterConfig)
-}
-
-func InitWithClient(config configuration.Config, client *dnscaster.DNScasterApiClient) (provider.Provider, error) {
-	domainFilter := buildDomainFilter(config)
-	logProviderCreation(config)
-
-	dnscasterDefaults := dnscaster.DNScasterDefaults{}
-	if err := env.Parse(&dnscasterDefaults); err != nil {
-		return nil, fmt.Errorf("reading dnscaster defaults failed: %v", err)
-	}
-
-	return dnscaster.NewDNScasterProviderWithClient(domainFilter, &dnscasterDefaults, client)
+	return dnscaster.NewDNScasterProvider(domainFilter, &dnscasterDefaults, &dnscasterConfig, config.DryRun)
 }
 
 func buildDomainFilter(config configuration.Config) *endpoint.DomainFilter {

@@ -26,8 +26,36 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Vet e2e tests
+        run: go vet -tags e2e ./...
+
       - name: Run tests
         run: make test
+
+  e2e:
+    name: E2E (dry run)
+    runs-on: ubuntu-latest
+    # The provider runs in dry-run mode, so these tests only read from
+    # DNScaster. They still need an API key, which pull requests from forks
+    # do not get, so the step is skipped there.
+    env:
+      DNSCASTER_API_KEY: ${{ secrets.DNSCASTER_API_KEY }}
+      DNSCASTER_OWNER_ID: kind-test
+      DNSCASTER_NAMESERVER_SET_ID: nst_0wd1fQSt2uYYNP4j3YLCZX
+      DNSCASTER_E2E_ZONE: dnstest.pinax.network
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run e2e tests
+        if: env.DNSCASTER_API_KEY != ''
+        run: make e2e
 
   docker:
     name: Build and publish image

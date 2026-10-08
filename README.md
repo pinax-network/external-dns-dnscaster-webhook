@@ -55,6 +55,7 @@ to your DNScaster service provider.
 | `EXCLUDE_DOMAIN_FILTER`          | List of domains to exclude from filtering.                       | Empty         |
 | `REGEXP_DOMAIN_FILTER`           | Regular expression for filtering domains.                        | Empty         |
 | `REGEXP_DOMAIN_FILTER_EXCLUSION` | Regular expression for excluding domains from the filter.        | Empty         |
+| `DRY_RUN`                        | Log changes instead of sending them to DNScaster (see below).    | `false`       |
 
 ### Logging Configuration
 
@@ -62,6 +63,21 @@ to your DNScaster service provider.
 | -------------------- | ----------------------------------------------------------------- | ------------- |
 | `LOG_LEVEL`          | Change the verbosity of logs (`debug`, `info`, `warn` or `error`) | `info`        |
 | `LOG_FORMAT`         | The format in which logs will be printed. (`text` or `json`)      | `text`        |
+
+### Dry Run
+
+With `DRY_RUN=true`, the webhook still reads zones and hosts from DNScaster, but
+the hosts and IP monitors it would create or delete are logged instead of sent:
+
+```text
+level=INFO msg="dry run: would create host" fqdn=app.example.com type=A data=1.2.3.4 ttl=300 zone_id=... hostname=app properties=map[owner-id:...]
+```
+
+ExternalDNS's own `--dry-run` flag does not reach webhook providers: with it, ExternalDNS
+still sends every change to the webhook. Use `DRY_RUN` instead.
+
+Since nothing changes in DNScaster, ExternalDNS sends the same changes again on every sync.
+With the `crd` registry, ExternalDNS also records them as applied.
 
 ## Provider Specific Annotations
 
@@ -200,3 +216,23 @@ external-dns.kubernetes.io/webhook-dnscaster-label-registry~1name: mainnet
 
 Similarly, the `~` character also needs an escape sequence. The special
 replacement character `~0` is used to replace `~` in label name.
+
+## Testing
+
+`make test` runs the unit tests. They need no network access.
+
+`make e2e` runs the provider in dry-run mode against the real DNScaster API,
+including through ExternalDNS's own webhook client. The tests only read from
+DNScaster, and fail if anything else is sent. They take the same settings as the
+webhook, plus a zone of the account to plan changes in:
+
+```sh
+DNSCASTER_API_KEY=... \
+DNSCASTER_OWNER_ID=kind-test \
+DNSCASTER_NAMESERVER_SET_ID=nst_0wd1fQSt2uYYNP4j3YLCZX \
+DNSCASTER_E2E_ZONE=dnstest.pinax.network \
+make e2e
+```
+
+Hosts the owner already has in that zone are used to plan deletes and updates;
+tests that need some are skipped when there are none.
