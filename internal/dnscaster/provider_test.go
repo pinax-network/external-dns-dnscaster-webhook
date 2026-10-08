@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -342,16 +343,18 @@ type stubAPI struct {
 	t         *testing.T
 	responses map[string]*http.Response
 	requests  []string
+	queries   map[string]url.Values
 	bodies    map[string]string
 }
 
 func newStubAPI(t *testing.T, responses map[string]*http.Response) *stubAPI {
-	return &stubAPI{t: t, responses: responses, bodies: make(map[string]string)}
+	return &stubAPI{t: t, responses: responses, queries: make(map[string]url.Values), bodies: make(map[string]string)}
 }
 
 func (s *stubAPI) RoundTrip(req *http.Request) (*http.Response, error) {
 	call := req.Method + " " + req.URL.Path
 	s.requests = append(s.requests, call)
+	s.queries[call] = req.URL.Query()
 
 	if req.Body != nil {
 		body, _ := io.ReadAll(req.Body)
@@ -371,6 +374,28 @@ func (s *stubAPI) provider(dryRun bool) *DNScasterProvider {
 	p.client.Client = &http.Client{Transport: s}
 	p.dryRun = dryRun
 	return p
+}
+
+func TestRecordsListsOnlyOwnedHosts(t *testing.T) {
+	t.Parallel()
+
+	api := newStubAPI(t, map[string]*http.Response{
+		"GET /v1/hosts/": jsonResponse(http.StatusOK, `{"collection":[{"id":"h-1","fqdn":"app.example.com","dns_type":"A","data":"1.2.3.4"}],"more_results":false}`, nil),
+	})
+
+	records, err := api.provider(false).Records(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+
+	// The API filters hosts by owner. Without the filter, Records would return
+	// other controllers' hosts and external-dns would plan to delete them.
+	if got := api.queries["GET /v1/hosts/"].Get("properties[" + ProviderMetadataOwnerID + "]"); got != "controller-1" {
+		t.Fatalf("expected hosts to be listed for owner controller-1, got %q", got)
+	}
 }
 
 func TestApplyChangesOnlyReadsInDryRun(t *testing.T) {

@@ -91,21 +91,28 @@ func zoneID(t *testing.T, p *DNScasterProvider, zone string) string {
 	return zones[i].ID
 }
 
-func TestE2EListHostsPagesThroughEveryHost(t *testing.T) {
+func TestE2EListHostsPagesThroughOwnedHosts(t *testing.T) {
 	p, _ := e2eProvider(t)
 
 	all, err := p.client.ListHosts(t.Context())
 	if err != nil {
 		t.Fatalf("listing hosts failed: %v", err)
 	}
+	for _, h := range all {
+		if owner := h.Properties[ProviderMetadataOwnerID]; owner != p.client.OwnerID {
+			t.Fatalf("listed host %s of owner %q, want only owner %q", h.ID, owner, p.client.OwnerID)
+		}
+	}
 	if len(all) < 2 {
 		t.Skipf("owner %q has %d hosts, paging needs at least 2", p.client.OwnerID, len(all))
 	}
 
-	p.client.DefaultPageSize = 1
+	// About three pages: enough to follow the cursor, few enough to stay
+	// well under the client's page limit.
+	p.client.DefaultPageSize = max(1, (len(all)+2)/3)
 	paged, err := p.client.ListHosts(t.Context())
 	if err != nil {
-		t.Fatalf("listing hosts one per page failed: %v", err)
+		t.Fatalf("listing hosts %d per page failed: %v", p.client.DefaultPageSize, err)
 	}
 
 	ids := func(hosts []Host) []string {
@@ -117,7 +124,7 @@ func TestE2EListHostsPagesThroughEveryHost(t *testing.T) {
 		return out
 	}
 	if got, want := ids(paged), ids(all); !slices.Equal(got, want) {
-		t.Fatalf("paging one host at a time listed %v, want %v", got, want)
+		t.Fatalf("paging %d hosts at a time listed %v, want %v", p.client.DefaultPageSize, got, want)
 	}
 }
 
@@ -167,7 +174,9 @@ func TestE2EPlansDeletesForExistingRecords(t *testing.T) {
 		t.Skipf("owner %q has no hosts in the e2e zone to plan deletes for", p.client.OwnerID)
 	}
 
-	cs, err := p.planChanges(t.Context(), &plan.Changes{Delete: records})
+	// Plan from the same listing, so hosts another controller changes in the
+	// meantime cannot make the comparison fail.
+	cs, err := p.newChangeSet(records, nil, nil, hosts)
 	if err != nil {
 		t.Fatalf("planning failed: %v", err)
 	}

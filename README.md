@@ -76,8 +76,13 @@ level=INFO msg="dry run: would create host" fqdn=app.example.com type=A data=1.2
 ExternalDNS's own `--dry-run` flag does not reach webhook providers: with it, ExternalDNS
 still sends every change to the webhook. Use `DRY_RUN` instead.
 
-Since nothing changes in DNScaster, ExternalDNS sends the same changes again on every sync.
-With the `crd` registry, ExternalDNS also records them as applied.
+With the `txt` or `noop` registry, ExternalDNS reads the records back from DNScaster, which
+has not changed, so it sends the same changes again on every sync.
+
+Do not use `DRY_RUN` with the `crd` registry. That registry reads its own `DNSRecord` objects
+instead of DNScaster: it marks the changes as applied after a dry run and does not send them
+again, even once `DRY_RUN` is turned off, so DNScaster no longer matches what ExternalDNS
+believes it holds.
 
 ## Provider Specific Annotations
 
