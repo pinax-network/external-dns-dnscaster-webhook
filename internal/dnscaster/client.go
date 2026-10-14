@@ -40,14 +40,6 @@ const (
 	maxPageSize     = 1000
 )
 
-// Retry behaviour for the transient statuses documented at
-// https://dnscaster.com/docs/api/status-codes
-const (
-	maxRetries     = 4
-	retryBaseDelay = 500 * time.Millisecond
-	maxRetryDelay  = 30 * time.Second
-)
-
 // clientVersion identifies this build in the User-Agent header. SetVersion is
 // called from main once the version is known.
 var clientVersion = "dev"
@@ -79,11 +71,10 @@ type DNScasterApiClient struct {
 	*http.Client
 }
 
-// apiResponse is the outcome of a single HTTP attempt against the API.
+// apiResponse is the outcome of an HTTP request against the API.
 type apiResponse struct {
 	statusCode int
 	requestID  string
-	header     http.Header
 	body       []byte
 }
 
@@ -255,7 +246,9 @@ func (c *DNScasterApiClient) pageSize() int {
 
 // do sends a request to the DNScaster API and decodes the JSON response into T.
 // The zero value of T is returned on error and for responses without a payload.
-// Rate-limited and transient server errors are retried with backoff.
+// Failed requests are not retried here: waiting out a 429 or a 5xx would
+// outlast the external-dns webhook timeout, so the error is returned and
+// external-dns retries on its next reconcile.
 func (c *DNScasterApiClient) do[T any](ctx context.Context, method, path string, query url.Values, body any) (T, error) {
 	var out T
 
@@ -270,48 +263,30 @@ func (c *DNScasterApiClient) do[T any](ctx context.Context, method, path string,
 		}
 	}
 
-	rawURL := requestURL(path, query)
+	resp, err := c.send(ctx, method, path, requestURL(path, query), payload)
+	if err != nil {
+		return out, err
+	}
 
-	for attempt := 0; ; attempt++ {
-		resp, err := c.send(ctx, method, path, rawURL, payload)
-		if err != nil {
-			return out, err
-		}
+	if resp.statusCode < 200 || resp.statusCode >= 300 {
+		return out, apiErrorFrom(method, path, resp)
+	}
 
-		if resp.statusCode < 200 || resp.statusCode >= 300 {
-			if canRetry(method, resp.statusCode) && attempt < maxRetries {
-				delay := retryDelay(resp.header, attempt)
-				log.Debug("retrying DNScaster API call",
-					"method", method, "path", path, "status", resp.statusCode,
-					"attempt", attempt+1, "delay", delay, "request.id", resp.requestID,
-					"ratelimit.remaining", resp.header.Get("RateLimit-Remaining"),
-					"ratelimit.reset", resp.header.Get("RateLimit-Reset"))
-
-				if err := wait(ctx, delay); err != nil {
-					return out, err
-				}
-				continue
-			}
-
-			return out, apiErrorFrom(method, path, resp)
-		}
-
-		// 202 (accepted) and 204 (no content) carry no payload.
-		if len(resp.body) == 0 {
-			success = true
-			return out, nil
-		}
-
-		if err := json.Unmarshal(resp.body, &out); err != nil {
-			return out, NewDataError("unmarshal", "API response body", err)
-		}
-
+	// 202 (accepted) and 204 (no content) carry no payload.
+	if len(resp.body) == 0 {
 		success = true
 		return out, nil
 	}
+
+	if err := json.Unmarshal(resp.body, &out); err != nil {
+		return out, NewDataError("unmarshal", "API response body", err)
+	}
+
+	success = true
+	return out, nil
 }
 
-// send performs a single attempt and reads the full response body.
+// send performs the HTTP request and reads the full response body.
 func (c *DNScasterApiClient) send(ctx context.Context, method, path, rawURL string, payload []byte) (*apiResponse, error) {
 	var bodyReader io.Reader
 	if len(payload) > 0 {
@@ -358,7 +333,6 @@ func (c *DNScasterApiClient) send(ctx context.Context, method, path, rawURL stri
 	return &apiResponse{
 		statusCode: resp.StatusCode,
 		requestID:  resp.Header.Get("X-Request-ID"),
-		header:     resp.Header,
 		body:       responseBody,
 	}, nil
 }
@@ -378,68 +352,6 @@ func apiErrorFrom(method, path string, resp *apiResponse) error {
 	}
 
 	return NewAPIError(method, path, resp.statusCode, resp.requestID, apiErr.Message, apiErr.Errors)
-}
-
-// canRetry reports whether a failed request may safely be repeated. A 429 is
-// always safe: the request was rejected before it took effect. Server errors
-// are only retried for GET, since a POST or DELETE may already have been
-// applied even though the response never made it back.
-func canRetry(method string, statusCode int) bool {
-	switch {
-	case statusCode == http.StatusTooManyRequests:
-		return true
-	case statusCode >= 500 && method == http.MethodGet:
-		return true
-	default:
-		return false
-	}
-}
-
-// retryDelay honours Retry-After when the API sends it and otherwise backs off
-// exponentially.
-func retryDelay(header http.Header, attempt int) time.Duration {
-	if delay, ok := parseRetryAfter(header.Get("Retry-After")); ok {
-		return min(delay, maxRetryDelay)
-	}
-	return min(retryBaseDelay<<attempt, maxRetryDelay)
-}
-
-// parseRetryAfter reads a Retry-After value, which the API documents in seconds
-// but HTTP also allows as a date.
-func parseRetryAfter(value string) (time.Duration, bool) {
-	if value == "" {
-		return 0, false
-	}
-
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds < 0 {
-			return 0, false
-		}
-		return time.Duration(seconds) * time.Second, true
-	}
-
-	if at, err := http.ParseTime(value); err == nil {
-		return max(time.Until(at), 0), true
-	}
-
-	return 0, false
-}
-
-// wait sleeps for d unless the context is cancelled first.
-func wait(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // userAgent identifies this webhook to the API, which asks for an app

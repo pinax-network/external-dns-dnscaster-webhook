@@ -3,6 +3,7 @@ package dnscaster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -10,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 func testClient(rt http.RoundTripper) *DNScasterApiClient {
@@ -358,146 +358,36 @@ func TestListAllFailsOnEmptyPageWithMoreResults(t *testing.T) {
 	}
 }
 
-func TestDoRetriesRateLimitedRequests(t *testing.T) {
+func TestDoDoesNotRetryFailedRequests(t *testing.T) {
 	t.Parallel()
 
-	calls := 0
-	client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		calls++
-		if calls == 1 {
-			return jsonResponse(http.StatusTooManyRequests, `{"message":"slow down"}`, http.Header{
-				"Retry-After":         []string{"0"},
-				"Ratelimit-Remaining": []string{"0"},
-			}), nil
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(fmt.Sprintf("%s %d", method, status), func(t *testing.T) {
+				t.Parallel()
+
+				calls := 0
+				client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+					calls++
+					return jsonResponse(status, "", http.Header{"Retry-After": []string{"30"}}), nil
+				}))
+
+				// Waiting out Retry-After would run past the external-dns webhook
+				// timeout, so the error goes back to external-dns to retry on its
+				// next reconcile.
+				_, err := client.do[Host](context.Background(), method, dnscasterHostPath, nil, nil)
+
+				apiErr, ok := errors.AsType[*APIError](err)
+				if !ok {
+					t.Fatalf("expected APIError, got: %T (%v)", err, err)
+				}
+				if apiErr.StatusCode != status {
+					t.Fatalf("unexpected status code: %d", apiErr.StatusCode)
+				}
+				if calls != 1 {
+					t.Fatalf("expected 1 call, got %d", calls)
+				}
+			})
 		}
-		return jsonResponse(http.StatusOK, `{"id":"h-1"}`, nil), nil
-	}))
-
-	host, err := client.do[Host](context.Background(), http.MethodPost, dnscasterHostPath, nil, HostEnvelope{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if calls != 2 {
-		t.Fatalf("expected 2 calls, got %d", calls)
-	}
-	if host.ID != "h-1" {
-		t.Fatalf("unexpected host: %+v", host)
-	}
-}
-
-func TestDoRetriesServerErrorsForGetOnly(t *testing.T) {
-	t.Parallel()
-
-	t.Run("get is retried", func(t *testing.T) {
-		t.Parallel()
-
-		calls := 0
-		client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-			calls++
-			if calls == 1 {
-				return jsonResponse(http.StatusServiceUnavailable, "", http.Header{"Retry-After": []string{"0"}}), nil
-			}
-			return jsonResponse(http.StatusOK, `{"collection":[],"more_results":false}`, nil), nil
-		}))
-
-		if _, err := client.do[ListResponse[Zone]](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if calls != 2 {
-			t.Fatalf("expected 2 calls, got %d", calls)
-		}
-	})
-
-	t.Run("post is not retried", func(t *testing.T) {
-		t.Parallel()
-
-		calls := 0
-		client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-			calls++
-			return jsonResponse(http.StatusBadGateway, "", http.Header{"Retry-After": []string{"0"}}), nil
-		}))
-
-		// The host may already have been created, so replaying the POST could
-		// duplicate it.
-		if _, err := client.do[Host](context.Background(), http.MethodPost, dnscasterHostPath, nil, HostEnvelope{}); err == nil {
-			t.Fatalf("expected error")
-		}
-		if calls != 1 {
-			t.Fatalf("expected 1 call, got %d", calls)
-		}
-	})
-}
-
-func TestDoStopsRetryingAfterMaxRetries(t *testing.T) {
-	t.Parallel()
-
-	calls := 0
-	client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		calls++
-		return jsonResponse(http.StatusTooManyRequests, `{"message":"slow down"}`, http.Header{
-			"Retry-After": []string{"0"},
-		}), nil
-	}))
-
-	if _, err := client.do[Zone](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil); err == nil {
-		t.Fatalf("expected error")
-	}
-	if want := maxRetries + 1; calls != want {
-		t.Fatalf("expected %d calls, got %d", want, calls)
-	}
-}
-
-func TestDoAbortsRetryOnContextCancellation(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		cancel()
-		// No Retry-After, so the client would otherwise back off for 500ms.
-		return jsonResponse(http.StatusTooManyRequests, `{"message":"slow down"}`, nil), nil
-	}))
-
-	if _, err := client.do[Zone](ctx, http.MethodGet, dnscasterZonePath, nil, nil); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled, got: %v", err)
-	}
-}
-
-func TestRetryDelay(t *testing.T) {
-	t.Parallel()
-
-	if got := retryDelay(http.Header{"Retry-After": []string{"9"}}, 0); got != 9*time.Second {
-		t.Fatalf("expected Retry-After to win, got %v", got)
-	}
-	if got := retryDelay(http.Header{"Retry-After": []string{"600"}}, 0); got != maxRetryDelay {
-		t.Fatalf("expected Retry-After to be capped, got %v", got)
-	}
-	if got := retryDelay(make(http.Header), 0); got != retryBaseDelay {
-		t.Fatalf("unexpected first backoff: %v", got)
-	}
-	if got := retryDelay(make(http.Header), 2); got != 4*retryBaseDelay {
-		t.Fatalf("unexpected third backoff: %v", got)
-	}
-	if got := retryDelay(make(http.Header), 20); got != maxRetryDelay {
-		t.Fatalf("expected backoff to be capped, got %v", got)
-	}
-}
-
-func TestParseRetryAfter(t *testing.T) {
-	t.Parallel()
-
-	if d, ok := parseRetryAfter("9"); !ok || d != 9*time.Second {
-		t.Fatalf("seconds: got %v %v", d, ok)
-	}
-	if _, ok := parseRetryAfter(""); ok {
-		t.Fatalf("empty value should not be usable")
-	}
-	if _, ok := parseRetryAfter("nonsense"); ok {
-		t.Fatalf("unparsable value should not be usable")
-	}
-	if _, ok := parseRetryAfter("-1"); ok {
-		t.Fatalf("negative value should not be usable")
-	}
-	if d, ok := parseRetryAfter("Mon, 22 Apr 2021 20:00:00 GMT"); !ok || d != 0 {
-		t.Fatalf("past date should clamp to zero: got %v %v", d, ok)
 	}
 }
