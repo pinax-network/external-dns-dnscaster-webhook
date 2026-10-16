@@ -207,3 +207,27 @@ external-dns.kubernetes.io/webhook-dnscaster-label-registry~1name: mainnet
 
 Similarly, the `~` character also needs an escape sequence. The special
 replacement character `~0` is used to replace `~` in label name.
+
+## Local Development
+
+`make dev` creates a kind cluster with a local image registry and starts Tilt
+against it. Tilt installs cilium, kube-prometheus-stack, external-dns with the
+webhook built from this checkout, the dnscaster-exporter and the manifests in
+`example/`. Changes under `cmd/`, `pkg/` and `internal/` are rebuilt and synced
+into the running webhook.
+
+It needs docker and the tools from the nix dev shell (kind, tilt, helm, kubectl,
+sops). The DNScaster API key is decrypted with sops, so you also need the age
+key listed in `.sops.yaml`.
+
+```sh
+make dev       # create the cluster if needed, then start Tilt
+make dev-down  # remove the example records from DNScaster, then delete the cluster
+```
+
+> [!Warning]
+> The test env uses the real DNScaster API and creates records under
+> `dnstest.pinax.network`. Its calls count against the same rate limit as every
+> other cluster. Exiting Tilt leaves external-dns running, so run `make dev-down`
+> when you are done. Deleting the cluster directly leaves the example records in
+> DNScaster.

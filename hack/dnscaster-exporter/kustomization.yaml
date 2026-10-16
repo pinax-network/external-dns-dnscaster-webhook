@@ -35,3 +35,10 @@ patches:
               key: API_KEY
     target:
       kind: Deployment
+  # The test cluster runs kube-prometheus-stack, not the VictoriaMetrics operator.
+  - patch: |-
+      $patch: delete
+      apiVersion: operator.victoriametrics.com/v1beta1
+      kind: VMRule
+      metadata:
+        name: dnscaster-exporter-alerts
