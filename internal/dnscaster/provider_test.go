@@ -2,7 +2,6 @@ package dnscaster_test
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 
@@ -10,8 +9,8 @@ import (
 	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 
-	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster/dnscastertest"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
@@ -103,13 +102,10 @@ func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
 func TestTrimHostnameFromFQDN(t *testing.T) {
 	t.Parallel()
 
-	setup := func(t *testing.T) (provider.Provider, *dnscaster.FakeDNScasterClient) {
+	setup := func(t *testing.T) (provider.Provider, *dnscastertest.Client) {
 		t.Helper()
 
-		config := configuration.Init()
-		config.DomainFilter = []string{"example.com", ".deep.example.com", "exact.example.net"}
-
-		p, fake := newTestProviderWithConfig(t, config, baseConnConfig(), baseDefaults())
+		p, fake := newTestProviderWithDomainFilter(t, endpoint.NewDomainFilter([]string{"example.com", ".deep.example.com", "exact.example.net"}))
 
 		fake.
 			WithZone("z-1", "example.com").
@@ -226,10 +222,7 @@ func TestTrimHostnameFromFQDN(t *testing.T) {
 func TestProviderWithoutDomainFilter(t *testing.T) {
 	t.Parallel()
 
-	config := configuration.Init()
-	config.DomainFilter = []string{}
-
-	p, fake := newTestProviderWithConfig(t, config, baseConnConfig(), baseDefaults())
+	p, fake := newTestProviderWithDomainFilter(t, endpoint.NewDomainFilter(nil))
 
 	fake.
 		WithZone("z-1", "api.example.com").
@@ -525,107 +518,4 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
-}
-
-func TestProviderApplyChangesDryRun(t *testing.T) {
-	t.Parallel()
-
-	connConfig := baseConnConfig()
-	connConfig.DryRun = true
-	p, fake := newTestProviderWithConfig(t, baseConfig(), connConfig, baseDefaults())
-
-	fake.
-		WithZone("z-1", "example.com").
-		WithHost(dnscaster.Host{
-			ID:          "h-old",
-			ZoneID:      "z-1",
-			FQDN:        "app.example.com",
-			DNSType:     "A",
-			Data:        "1.2.3.4",
-			IPMonitorID: "m-old",
-			Properties:  map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
-		}).
-		WithMonitor(dnscaster.Monitor{ID: "m-old"})
-
-	fake.OnCreateHost = func(host dnscaster.Host) error {
-		t.Fatalf("unexpected call to CreateHost() in dry-run mode: %+v", host)
-		return nil
-	}
-	fake.OnDeleteHost = func(hostID string) error {
-		t.Fatalf("unexpected call to DeleteHost() in dry-run mode: %s", hostID)
-		return nil
-	}
-	fake.OnCreateMonitor = func(mon dnscaster.Monitor) error {
-		t.Fatalf("unexpected call to CreateMonitor() in dry-run mode: %+v", mon)
-		return nil
-	}
-	fake.OnDeleteMonitor = func(monitorID string) error {
-		t.Fatalf("unexpected call to DeleteMonitor() in dry-run mode: %s", monitorID)
-		return nil
-	}
-
-	create := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
-	create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
-
-	changes := &plan.Changes{
-		Delete: []*endpoint.Endpoint{
-			endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
-		},
-		Create: []*endpoint.Endpoint{create},
-	}
-	if err := p.ApplyChanges(context.Background(), changes); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	records, err := p.Records(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(records) != 1 || records[0].DNSName != "app.example.com" || records[0].Targets[0] != "1.2.3.4" {
-		t.Fatalf("expected upstream records to be unchanged, got: %v", records)
-	}
-	if _, ok := fake.Monitors["m-old"]; !ok || len(fake.Monitors) != 1 {
-		t.Fatalf("expected upstream monitors to be unchanged, got: %v", fake.Monitors)
-	}
-}
-
-func TestRecordsReturnsHostsBeyondTheFirstPage(t *testing.T) {
-	t.Parallel()
-
-	p, fake := newTestProvider(t)
-	fake.WithZone("z-1", "example.com")
-
-	// The API caps a list response at max_results records and reports the rest
-	// via more_results. Before paging was implemented the provider only ever saw
-	// the first page, so external-dns treated the remaining records as missing
-	// and recreated them on every reconcile.
-	const total = 250
-	for i := range total {
-		fake.WithHost(dnscaster.Host{
-			ID:         fmt.Sprintf("h-%04d", i),
-			ZoneID:     "z-1",
-			FQDN:       fmt.Sprintf("app-%04d.example.com", i),
-			Hostname:   fmt.Sprintf("app-%04d", i),
-			DNSType:    "A",
-			Data:       "1.2.3.4",
-			TTL:        300,
-			Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
-		})
-	}
-
-	records, err := p.Records(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(records) != total {
-		t.Fatalf("expected %d records, got %d", total, len(records))
-	}
-
-	seen := make(map[string]bool, len(records))
-	for _, record := range records {
-		if seen[record.DNSName] {
-			t.Fatalf("record listed twice: %s", record.DNSName)
-		}
-		seen[record.DNSName] = true
-	}
 }

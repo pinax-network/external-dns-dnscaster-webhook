@@ -3,58 +3,25 @@ package dnscaster_test
 import (
 	"testing"
 
+	"sigs.k8s.io/external-dns/endpoint"
 	"sigs.k8s.io/external-dns/provider"
 
-	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/configuration"
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
-	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnsprovider"
+	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster/dnscastertest"
 )
 
-func newTestProvider(t *testing.T) (provider.Provider, *dnscaster.FakeDNScasterClient) {
+func newTestProvider(t *testing.T) (provider.Provider, *dnscastertest.Client) {
 	t.Helper()
 
-	config := baseConfig()
+	return newTestProviderWithDomainFilter(t, endpoint.NewDomainFilter([]string{"example.com"}))
+}
+
+func newTestProviderWithDomainFilter(t *testing.T, domainFilter *endpoint.DomainFilter) (provider.Provider, *dnscastertest.Client) {
+	t.Helper()
+
 	connConfig := baseConnConfig()
-	defaults := baseDefaults()
-
-	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
-	if err != nil {
-		t.Fatalf("creating fake dnscaster client failed: %v", err)
-	}
-
-	p, err := dnsprovider.InitWithClient(config, client)
-	if err != nil {
-		t.Fatalf("failed to init provider: %v", err)
-	}
-
-	return p, fake
-}
-
-func newTestProviderWithConfig(
-	t *testing.T,
-	config configuration.Config,
-	connConfig *dnscaster.DNScasterConnectionConfig,
-	defaults *dnscaster.DNScasterDefaults,
-) (provider.Provider, *dnscaster.FakeDNScasterClient) {
-	t.Helper()
-
-	client, fake, err := dnscaster.NewFakeDnscasterClient(connConfig, defaults)
-	if err != nil {
-		t.Fatalf("creating fake dnscaster client failed: %v", err)
-	}
-
-	p, err := dnsprovider.InitWithClient(config, client)
-	if err != nil {
-		t.Fatalf("failed to init provider: %v", err)
-	}
-
-	return p, fake
-}
-
-func baseConfig() configuration.Config {
-	cfg := configuration.Init()
-	cfg.DomainFilter = []string{"example.com"}
-	return cfg
+	fake := dnscastertest.NewClient(connConfig.OwnerID)
+	return dnscaster.NewDNScasterProvider(domainFilter, baseDefaults(), connConfig, fake), fake
 }
 
 func baseConnConfig() *dnscaster.DNScasterConnectionConfig {
