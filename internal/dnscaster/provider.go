@@ -90,24 +90,6 @@ func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 	return nil
 }
 
-func (p *DNScasterProvider) zonesMap(ctx context.Context) (zonesMap, error) {
-	zones, err := p.client.ListZones(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	managedZones, err := p.filterManagedZones(zones)
-	if err != nil {
-		return nil, err
-	}
-
-	zonesMap := make(zonesMap, len(managedZones))
-	for _, zone := range managedZones {
-		zonesMap[zone.Domain] = zone.ID
-	}
-	return zonesMap, nil
-}
-
 // GetDomainFilter returns the domain filter for the provider.
 func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter

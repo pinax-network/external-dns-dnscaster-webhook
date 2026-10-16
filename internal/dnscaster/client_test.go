@@ -2,15 +2,19 @@ package dnscaster
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -94,8 +98,9 @@ func TestDoSetsContentTypeForRequestBody(t *testing.T) {
 func TestDoReturnsNetworkError(t *testing.T) {
 	t.Parallel()
 
+	dialErr := errors.New("dial error")
 	client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return nil, errors.New("dial error")
+		return nil, dialErr
 	}))
 
 	_, err := client.do[ListResponse[Zone]](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil)
@@ -105,6 +110,60 @@ func TestDoReturnsNetworkError(t *testing.T) {
 
 	if _, ok := errors.AsType[*NetworkError](err); !ok {
 		t.Fatalf("expected NetworkError, got: %T (%v)", err, err)
+	}
+	if !errors.Is(err, dialErr) {
+		t.Fatalf("expected the dial error to be wrapped, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dial error") {
+		t.Fatalf("expected the dial error in the message, got: %v", err)
+	}
+}
+
+func TestDoReturnsDataError(t *testing.T) {
+	t.Parallel()
+
+	readErr := errors.New("connection reset")
+	for name, tc := range map[string]struct {
+		body      any
+		response  *http.Response
+		operation string
+	}{
+		"unmarshalable request body": {
+			body:      make(chan int),
+			operation: "marshal",
+		},
+		"undecodable response body": {
+			response:  jsonResponse(http.StatusOK, `{"id":`, nil),
+			operation: "unmarshal",
+		},
+		"unreadable response body": {
+			response:  &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(iotest.ErrReader(readErr)), Header: make(http.Header)},
+			operation: "read",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				if tc.response == nil {
+					t.Fatalf("unexpected request")
+				}
+				return tc.response, nil
+			}))
+
+			_, err := client.do[Host](context.Background(), http.MethodPost, dnscasterHostPath, nil, tc.body)
+
+			dataErr, ok := errors.AsType[*DataError](err)
+			if !ok {
+				t.Fatalf("expected DataError, got: %T (%v)", err, err)
+			}
+			if dataErr.Operation != tc.operation || !strings.Contains(err.Error(), tc.operation) {
+				t.Fatalf("expected a %s error, got: %v", tc.operation, err)
+			}
+			if dataErr.Unwrap() == nil {
+				t.Fatalf("expected the cause to be wrapped, got: %v", err)
+			}
+		})
 	}
 }
 
@@ -385,6 +444,19 @@ func TestListAllFailsWhenCursorDoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestListAllFailsWhenLastRecordHasNoID(t *testing.T) {
+	t.Parallel()
+
+	client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"collection":[{"domain":"example.com"}],"more_results":true}`, nil), nil
+	}))
+
+	_, err := client.listAll[Zone](context.Background(), dnscasterZonePath, nil)
+	if err == nil || !strings.Contains(err.Error(), "no id") {
+		t.Fatalf("expected a missing id error, got: %v", err)
+	}
+}
+
 func TestListAllFailsOnEmptyPageWithMoreResults(t *testing.T) {
 	t.Parallel()
 
@@ -427,6 +499,190 @@ func TestDoDoesNotRetryFailedRequests(t *testing.T) {
 					t.Fatalf("expected 1 call, got %d", calls)
 				}
 			})
+		}
+	}
+}
+
+func TestClientMethodsSendExpectedRequests(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		call     func(context.Context, *DNScasterApiClient) (any, error)
+		method   string
+		path     string
+		query    url.Values
+		body     string
+		status   int
+		response string
+		want     any
+	}{
+		"ListZones": {
+			call:     func(ctx context.Context, c *DNScasterApiClient) (any, error) { return c.ListZones(ctx) },
+			method:   http.MethodGet,
+			path:     "/v1/zones/",
+			query:    url.Values{"max_results": {"100"}},
+			status:   http.StatusOK,
+			response: `{"collection":[{"id":"z-1","domain":"example.com"}],"more_results":false}`,
+			want:     []Zone{{ID: "z-1", Domain: "example.com"}},
+		},
+		"ListHosts": {
+			call:     func(ctx context.Context, c *DNScasterApiClient) (any, error) { return c.ListHosts(ctx) },
+			method:   http.MethodGet,
+			path:     "/v1/hosts/",
+			query:    url.Values{"max_results": {"100"}, "properties[owner-id]": {"controller-1"}},
+			status:   http.StatusOK,
+			response: `{"collection":[{"id":"h-1","fqdn":"app.example.com"}],"more_results":false}`,
+			want:     []Host{{ID: "h-1", FQDN: "app.example.com"}},
+		},
+		"CreateHost": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return c.CreateHost(ctx, Host{ZoneID: "z-1", Hostname: "app"})
+			},
+			method:   http.MethodPost,
+			path:     "/v1/hosts/",
+			body:     `{"host":{"zone_id":"z-1","hostname":"app"}}`,
+			status:   http.StatusCreated,
+			response: `{"id":"h-1","zone_id":"z-1","hostname":"app"}`,
+			want:     Host{ID: "h-1", ZoneID: "z-1", Hostname: "app"},
+		},
+		"DeleteHost": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return nil, c.DeleteHost(ctx, "h-1")
+			},
+			method: http.MethodDelete,
+			path:   "/v1/hosts/h-1",
+			status: http.StatusAccepted,
+		},
+		"GetMonitor": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return c.GetMonitor(ctx, "m-1")
+			},
+			method:   http.MethodGet,
+			path:     "/v1/ip_monitors/m-1",
+			status:   http.StatusOK,
+			response: `{"id":"m-1","uri":"ping://1.2.3.4"}`,
+			want:     Monitor{ID: "m-1", URI: "ping://1.2.3.4"},
+		},
+		"CreateMonitor": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return c.CreateMonitor(ctx, Monitor{Name: "app.example.com", NameserverSetID: "ns-1", URI: "ping://1.2.3.4"})
+			},
+			method:   http.MethodPost,
+			path:     "/v1/ip_monitors/",
+			body:     `{"ip_monitor":{"name":"app.example.com","nameserver_set_id":"ns-1","uri":"ping://1.2.3.4"}}`,
+			status:   http.StatusCreated,
+			response: `{"id":"m-1","name":"app.example.com","nameserver_set_id":"ns-1","uri":"ping://1.2.3.4"}`,
+			want:     Monitor{ID: "m-1", Name: "app.example.com", NameserverSetID: "ns-1", URI: "ping://1.2.3.4"},
+		},
+		"DeleteMonitor": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return nil, c.DeleteMonitor(ctx, "m-1")
+			},
+			method: http.MethodDelete,
+			path:   "/v1/ip_monitors/m-1",
+			status: http.StatusAccepted,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			client := testClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.Method != tc.method || req.URL.Path != tc.path {
+					t.Fatalf("expected %s %s, got: %s %s", tc.method, tc.path, req.Method, req.URL.Path)
+				}
+				if got := req.URL.Query(); !maps.EqualFunc(got, tc.query, slices.Equal) {
+					t.Fatalf("expected query %v, got: %v", tc.query, got)
+				}
+				var body []byte
+				if req.Body != nil {
+					body, _ = io.ReadAll(req.Body)
+				}
+				if string(body) != tc.body {
+					t.Fatalf("expected body %s, got: %s", tc.body, body)
+				}
+				return jsonResponse(tc.status, tc.response, nil), nil
+			}))
+			client.OwnerID = "controller-1"
+
+			got, err := tc.call(context.Background(), client)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("expected %+v, got: %+v", tc.want, got)
+			}
+		})
+
+		t.Run(name+" returns API errors", func(t *testing.T) {
+			t.Parallel()
+
+			client := testClient(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusInternalServerError, `{"message":"boom"}`, nil), nil
+			}))
+
+			_, err := tc.call(context.Background(), client)
+			if _, ok := errors.AsType[*APIError](err); !ok {
+				t.Fatalf("expected APIError, got: %T (%v)", err, err)
+			}
+		})
+	}
+}
+
+func TestNewDNScasterClientConfiguresTLS(t *testing.T) {
+	t.Parallel()
+
+	for _, skipVerify := range []bool{false, true} {
+		client, err := NewDNScasterClient(&DNScasterConnectionConfig{SkipTLSVerify: skipVerify}, &DNScasterDefaults{})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("expected an *http.Transport, got: %T", client.Transport)
+		}
+		if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+			t.Fatalf("expected TLS 1.2 or newer, got min version: %x", transport.TLSClientConfig.MinVersion)
+		}
+		if transport.TLSClientConfig.InsecureSkipVerify != skipVerify {
+			t.Fatalf("expected InsecureSkipVerify=%t, got: %t", skipVerify, transport.TLSClientConfig.InsecureSkipVerify)
+		}
+		if client.Jar == nil {
+			t.Fatalf("expected a cookie jar")
+		}
+	}
+}
+
+func TestSetVersionUpdatesUserAgent(t *testing.T) {
+	// Not parallel: clientVersion is package state read by every request.
+	previous := clientVersion
+	t.Cleanup(func() { clientVersion = previous })
+
+	SetVersion("v1.2.3")
+	if got := userAgent(); !strings.HasPrefix(got, "external-dns-dnscaster-webhook/v1.2.3 ") {
+		t.Fatalf("expected the version in the User-Agent, got: %q", got)
+	}
+
+	// An empty version keeps the one already set.
+	SetVersion("")
+	if got := userAgent(); !strings.HasPrefix(got, "external-dns-dnscaster-webhook/v1.2.3 ") {
+		t.Fatalf("expected the version to be kept, got: %q", got)
+	}
+}
+
+func TestNormalizeOperation(t *testing.T) {
+	t.Parallel()
+
+	for path, want := range map[string]string{
+		dnscasterZonePath:            "zones",
+		dnscasterHostPath:            "hosts",
+		dnscasterHostPath + "h-1":    "hosts",
+		dnscasterMonitorPath:         "monitors",
+		dnscasterMonitorPath + "m-1": "monitors",
+		"v1/other/":                  "v1/other/",
+	} {
+		if got := normalizeOperation(path); got != want {
+			t.Fatalf("normalizeOperation(%q): expected %q, got: %q", path, want, got)
 		}
 	}
 }

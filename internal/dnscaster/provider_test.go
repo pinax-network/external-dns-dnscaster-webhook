@@ -2,6 +2,7 @@ package dnscaster_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -110,7 +111,9 @@ func TestTrimHostnameFromFQDN(t *testing.T) {
 		fake.
 			WithZone("z-1", "example.com").
 			WithZone("z-2", "deep.example.com").
-			WithZone("z-3", "exact.example.net")
+			WithZone("z-3", "exact.example.net").
+			// In the account but outside the domain filter, so never used.
+			WithZone("z-4", "unmanaged.org")
 
 		return p, fake
 	}
@@ -518,4 +521,132 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestProviderApplyChangesReturnsClientErrors(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("boom")
+	createWithMonitor := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
+	createWithMonitor.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+	deleteExisting := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+
+	for name, tc := range map[string]struct {
+		fail    func(*dnscastertest.Client)
+		changes *plan.Changes
+	}{
+		"list zones": {
+			fail:    func(c *dnscastertest.Client) { c.OnListZones = func() error { return boom } },
+			changes: &plan.Changes{Create: []*endpoint.Endpoint{createWithMonitor}},
+		},
+		"list hosts": {
+			fail:    func(c *dnscastertest.Client) { c.OnListHosts = func() error { return boom } },
+			changes: &plan.Changes{Delete: []*endpoint.Endpoint{deleteExisting}},
+		},
+		"create monitor": {
+			fail:    func(c *dnscastertest.Client) { c.OnCreateMonitor = func(dnscaster.Monitor) error { return boom } },
+			changes: &plan.Changes{Create: []*endpoint.Endpoint{createWithMonitor}},
+		},
+		"delete host": {
+			fail:    func(c *dnscastertest.Client) { c.OnDeleteHost = func(string) error { return boom } },
+			changes: &plan.Changes{Delete: []*endpoint.Endpoint{deleteExisting}},
+		},
+		"delete monitor": {
+			fail:    func(c *dnscastertest.Client) { c.OnDeleteMonitor = func(string) error { return boom } },
+			changes: &plan.Changes{Delete: []*endpoint.Endpoint{deleteExisting}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			p, fake := newTestProvider(t)
+			fake.
+				WithZone("z-1", "example.com").
+				WithHost(dnscaster.Host{
+					ID:          "h-old",
+					ZoneID:      "z-1",
+					FQDN:        "app.example.com",
+					DNSType:     "A",
+					Data:        "1.2.3.4",
+					IPMonitorID: "m-old",
+					Properties:  map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
+				}).
+				WithMonitor(dnscaster.Monitor{ID: "m-old"})
+			tc.fail(fake)
+
+			if err := p.ApplyChanges(context.Background(), tc.changes); !errors.Is(err, boom) {
+				t.Fatalf("expected the %s error, got: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestProviderRecordsReturnsClientErrors(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+	boom := errors.New("boom")
+	fake.OnListHosts = func() error { return boom }
+
+	// Returning no records instead would make external-dns recreate them all.
+	if records, err := p.Records(context.Background()); !errors.Is(err, boom) {
+		t.Fatalf("expected the list error, got records: %v, error: %v", records, err)
+	}
+}
+
+func TestProviderApplyChangesDeletesMonitorWhenHostCreationFails(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+	fake.WithZone("z-1", "example.com")
+	fake.OnCreateHost = func(dnscaster.Host) error { return errors.New("boom") }
+
+	create := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+	create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+
+	if err := p.ApplyChanges(context.Background(), &plan.Changes{Create: []*endpoint.Endpoint{create}}); err == nil {
+		t.Fatal("expected the host creation error")
+	}
+	if len(fake.Monitors) != 0 {
+		t.Fatalf("expected the monitor to be deleted, got: %v", fake.Monitors)
+	}
+}
+
+func TestProviderSetIdentifierRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+	fake.WithZone("z-1", "example.com")
+
+	create := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+	create.SetIdentifier = "blue"
+	if err := p.ApplyChanges(context.Background(), &plan.Changes{Create: []*endpoint.Endpoint{create}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fake.Hosts["z-1"][0].Properties[dnscaster.ProviderMetadataSetIdentifier]; got != "blue" {
+		t.Fatalf("expected set identifier property blue, got: %q", got)
+	}
+
+	records, err := p.Records(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 || records[0].SetIdentifier != "blue" {
+		t.Fatalf("expected a record with set identifier blue, got: %v", records)
+	}
+	// Provider metadata stays out of the provider-specific properties.
+	if len(records[0].ProviderSpecific) != 0 {
+		t.Fatalf("expected no provider-specific properties, got: %v", records[0].ProviderSpecific)
+	}
+}
+
+func TestProviderGetDomainFilter(t *testing.T) {
+	t.Parallel()
+
+	p, _ := newTestProvider(t)
+
+	filter := p.GetDomainFilter()
+	if !filter.Match("app.example.com") || filter.Match("app.other.com") {
+		t.Fatalf("expected the provider's example.com filter, got: %+v", filter)
+	}
 }

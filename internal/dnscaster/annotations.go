@@ -90,8 +90,8 @@ func escapeLabelKey(s string) string {
 }
 
 func unescapeLabelKey(s string) string {
-	s = strings.ReplaceAll(s, "~0", "~")
 	s = strings.ReplaceAll(s, "~1", "/")
+	s = strings.ReplaceAll(s, "~0", "~")
 	return s
 }
 
