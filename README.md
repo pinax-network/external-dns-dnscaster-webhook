@@ -49,12 +49,19 @@ to your DNScaster service provider.
 | -------------------------------- | ---------------------------------------------------------------- | ------------- |
 | `SERVER_HOST`                    | The host address where the server listens.                       | `localhost`   |
 | `SERVER_PORT`                    | The port where the server listens.                               | `8888`        |
-| `SERVER_READ_TIMEOUT`            | Duration the server waits before timing out on read operations.  | N/A           |
-| `SERVER_WRITE_TIMEOUT`           | Duration the server waits before timing out on write operations. | N/A           |
+| `SERVER_READ_TIMEOUT`            | Duration the server waits before timing out on read operations.  | `0s`          |
+| `SERVER_WRITE_TIMEOUT`           | Time to answer a webhook request before returning a 5xx.         | `0s`          |
 | `DOMAIN_FILTER`                  | List of domains to include in the filter.                        | Empty         |
 | `EXCLUDE_DOMAIN_FILTER`          | List of domains to exclude from filtering.                       | Empty         |
 | `REGEXP_DOMAIN_FILTER`           | Regular expression for filtering domains.                        | Empty         |
 | `REGEXP_DOMAIN_FILTER_EXCLUSION` | Regular expression for excluding domains from the filter.        | Empty         |
+
+> [!Note]
+> A timeout of `0s` means no timeout. external-dns gives up on a webhook request
+> after `--webhook-provider-read-timeout` plus `--webhook-provider-write-timeout`
+> (15s by default) and exits. Set `SERVER_WRITE_TIMEOUT` a few seconds below that
+> sum (e.g. `12s`) so the webhook answers with a 5xx first, which external-dns
+> retries on its next sync.
 
 ### Logging Configuration
 
