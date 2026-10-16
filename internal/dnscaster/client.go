@@ -62,6 +62,7 @@ type DNScasterConnectionConfig struct {
 	ApiKey          string `env:"DNSCASTER_API_KEY,notEmpty"`
 	NameserverSetID string `env:"DNSCASTER_NAMESERVER_SET_ID,notEmpty"`
 	SkipTLSVerify   bool   `env:"DNSCASTER_SKIP_TLS_VERIFY" envDefault:"false"`
+	DryRun          bool   `env:"DNSCASTER_DRY_RUN" envDefault:"false"`
 }
 
 // DNScasterApiClient encapsulates the client configuration and HTTP client
@@ -81,6 +82,9 @@ type apiResponse struct {
 // NewDNScasterClient creates a new instance of DnscasterApiClient
 func NewDNScasterClient(config *DNScasterConnectionConfig, defaults *DNScasterDefaults) (*DNScasterApiClient, error) {
 	log.Info("creating a new Dnscaster API Client")
+	if config.DryRun {
+		log.Warn("dry-run mode enabled: DNScaster writes will be logged, not applied")
+	}
 
 	jar, err := cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
 	if err != nil {
@@ -251,6 +255,13 @@ func (c *DNScasterApiClient) pageSize() int {
 // external-dns retries on its next reconcile.
 func (c *DNScasterApiClient) do[T any](ctx context.Context, method, path string, query url.Values, body any) (T, error) {
 	var out T
+
+	// In dry-run mode only reads reach the API. Writes are logged and
+	// reported as successful with an empty response.
+	if c.DryRun && method != http.MethodGet {
+		log.Info("dry-run: skipping DNScaster write", "method", method, "path", path, "body", body)
+		return out, nil
+	}
 
 	success := false
 	defer func() { metrics.Get().MarkOperation(dnscasterOperation, success) }()

@@ -527,6 +527,68 @@ func TestProviderApplyChangesNoMonitors(t *testing.T) {
 	})
 }
 
+func TestProviderApplyChangesDryRun(t *testing.T) {
+	t.Parallel()
+
+	connConfig := baseConnConfig()
+	connConfig.DryRun = true
+	p, fake := newTestProviderWithConfig(t, baseConfig(), connConfig, baseDefaults())
+
+	fake.
+		WithZone("z-1", "example.com").
+		WithHost(dnscaster.Host{
+			ID:          "h-old",
+			ZoneID:      "z-1",
+			FQDN:        "app.example.com",
+			DNSType:     "A",
+			Data:        "1.2.3.4",
+			IPMonitorID: "m-old",
+			Properties:  map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
+		}).
+		WithMonitor(dnscaster.Monitor{ID: "m-old"})
+
+	fake.OnCreateHost = func(host dnscaster.Host) error {
+		t.Fatalf("unexpected call to CreateHost() in dry-run mode: %+v", host)
+		return nil
+	}
+	fake.OnDeleteHost = func(hostID string) error {
+		t.Fatalf("unexpected call to DeleteHost() in dry-run mode: %s", hostID)
+		return nil
+	}
+	fake.OnCreateMonitor = func(mon dnscaster.Monitor) error {
+		t.Fatalf("unexpected call to CreateMonitor() in dry-run mode: %+v", mon)
+		return nil
+	}
+	fake.OnDeleteMonitor = func(monitorID string) error {
+		t.Fatalf("unexpected call to DeleteMonitor() in dry-run mode: %s", monitorID)
+		return nil
+	}
+
+	create := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
+	create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https")
+
+	changes := &plan.Changes{
+		Delete: []*endpoint.Endpoint{
+			endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
+		},
+		Create: []*endpoint.Endpoint{create},
+	}
+	if err := p.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	records, err := p.Records(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(records) != 1 || records[0].DNSName != "app.example.com" || records[0].Targets[0] != "1.2.3.4" {
+		t.Fatalf("expected upstream records to be unchanged, got: %v", records)
+	}
+	if _, ok := fake.Monitors["m-old"]; !ok || len(fake.Monitors) != 1 {
+		t.Fatalf("expected upstream monitors to be unchanged, got: %v", fake.Monitors)
+	}
+}
+
 func TestRecordsReturnsHostsBeyondTheFirstPage(t *testing.T) {
 	t.Parallel()
 
