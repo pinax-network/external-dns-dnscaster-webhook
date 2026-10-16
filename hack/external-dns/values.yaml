@@ -4,7 +4,7 @@ fullnameOverride: external-dns-dnscaster
 logLevel: debug
 logFormat: text
 
-interval: 5s
+interval: 30s
 sources:
   - gateway-httproute
   - ingress
