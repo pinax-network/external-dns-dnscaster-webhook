@@ -168,6 +168,39 @@ func TestDoReturnsNilOnAcceptedDelete(t *testing.T) {
 	}
 }
 
+func TestDoSkipsWritesInDryRun(t *testing.T) {
+	t.Parallel()
+
+	client := testClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodGet {
+			t.Fatalf("unexpected %s %s in dry-run mode", req.Method, req.URL.Path)
+		}
+		return jsonResponse(http.StatusOK, `{"id":"z-1"}`, nil), nil
+	}))
+	client.DryRun = true
+
+	host, err := client.do[Host](context.Background(), http.MethodPost, dnscasterHostPath, nil, HostEnvelope{Host: Host{ZoneID: "z-1"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if host.ID != "" {
+		t.Fatalf("expected an empty host, got: %+v", host)
+	}
+
+	if _, err := client.do[noContent](context.Background(), http.MethodDelete, dnscasterHostPath+"h-1", nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Reads still reach the API so the plan reflects the real state.
+	zone, err := client.do[Zone](context.Background(), http.MethodGet, dnscasterZonePath, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if zone.ID != "z-1" {
+		t.Fatalf("expected zone z-1, got: %+v", zone)
+	}
+}
+
 func jsonResponse(status int, body string, header http.Header) *http.Response {
 	if header == nil {
 		header = make(http.Header)

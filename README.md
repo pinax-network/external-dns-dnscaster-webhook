@@ -35,6 +35,14 @@ to your DNScaster service provider.
 | `DNSCASTER_API_KEY`           | API key needed to communicate with DNScaster API         | N/A           |
 | `DNSCASTER_NAMESERVER_SET_ID` | DNScaster Nameserver Set tied to this provider           | N/A           |
 | `DNSCASTER_SKIP_TLS_VERIFY`   | Whether to skip TLS verification (`true` or `false`).    | `false`       |
+| `DNSCASTER_DRY_RUN`           | Log DNScaster writes instead of sending them.            | `false`       |
+
+> [!Note]
+> external-dns does not forward its `--dry-run` flag to webhook providers, so set
+> `DNSCASTER_DRY_RUN` on the webhook container instead. Reads still reach the
+> DNScaster API. Since nothing is applied, external-dns sends the same changes
+> on every sync, and each one also lists zones and hosts again, which counts
+> against the API rate limit.
 
 ### Default Values Configuration
 
