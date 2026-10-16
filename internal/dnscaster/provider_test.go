@@ -3,6 +3,7 @@ package dnscaster_test
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -100,7 +101,7 @@ func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
 	}
 }
 
-func TestTrimHostnameFromFQDN(t *testing.T) {
+func TestApplyCreateZoneMatching(t *testing.T) {
 	t.Parallel()
 
 	setup := func(t *testing.T) (provider.Provider, *dnscastertest.Client) {
@@ -214,6 +215,89 @@ func TestTrimHostnameFromFQDN(t *testing.T) {
 		changes := &plan.Changes{
 			Create: []*endpoint.Endpoint{
 				endpoint.NewEndpoint("unmanaged.org", "A", "1.2.3.4"),
+			},
+		}
+		if err := p.ApplyChanges(context.Background(), changes); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("testing nested zones picks the deepest zone", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProviderWithDomainFilter(t, endpoint.NewDomainFilter([]string{"example.com"}))
+
+		fake.
+			WithZone("z-1", "example.com").
+			WithZone("z-2", "sub.example.com")
+
+		fake.OnCreateHost = func(host dnscaster.Host) error {
+			if host.Hostname != "a" {
+				t.Fatalf("expected host.Hostname: a, got: %s", host.Hostname)
+			}
+			if host.ZoneID != "z-2" {
+				t.Fatalf("expected host.ZoneID: z-2, got: %s", host.ZoneID)
+			}
+			return nil
+		}
+		changes := &plan.Changes{
+			Create: []*endpoint.Endpoint{
+				endpoint.NewEndpoint("a.sub.example.com", "A", "1.2.3.4"),
+			},
+		}
+		if err := p.ApplyChanges(context.Background(), changes); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("testing without domain filter", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProviderWithDomainFilter(t, endpoint.NewDomainFilter(nil))
+
+		fake.
+			WithZone("z-1", "example.com")
+
+		fake.OnCreateHost = func(host dnscaster.Host) error {
+			if host.Hostname != "app" {
+				t.Fatalf("expected host.Hostname: app, got: %s", host.Hostname)
+			}
+			if host.ZoneID != "z-1" {
+				t.Fatalf("expected host.ZoneID: z-1, got: %s", host.ZoneID)
+			}
+			return nil
+		}
+		changes := &plan.Changes{
+			Create: []*endpoint.Endpoint{
+				endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
+			},
+		}
+		if err := p.ApplyChanges(context.Background(), changes); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("testing regex filter", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProviderWithDomainFilter(t, endpoint.NewRegexDomainFilter(regexp.MustCompile(`example\.com$`), nil))
+
+		fake.
+			WithZone("z-1", "example.com").
+			WithZone("z-2", "unmanaged.org")
+
+		fake.OnCreateHost = func(host dnscaster.Host) error {
+			if host.Hostname != "app" {
+				t.Fatalf("expected host.Hostname: app, got: %s", host.Hostname)
+			}
+			if host.ZoneID != "z-1" {
+				t.Fatalf("expected host.ZoneID: z-1, got: %s", host.ZoneID)
+			}
+			return nil
+		}
+		changes := &plan.Changes{
+			Create: []*endpoint.Endpoint{
+				endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4"),
 			},
 		}
 		if err := p.ApplyChanges(context.Background(), changes); err != nil {
