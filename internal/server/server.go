@@ -19,6 +19,10 @@ import (
 	"github.com/pinax-network/external-dns-dnscaster-webhook/pkg/webhook"
 )
 
+// responseSlack is how long past the request deadline the main server keeps
+// the connection writable, so the handler can still send its 5xx.
+const responseSlack = time.Second
+
 func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, err := w.Write([]byte("OK"))
@@ -36,14 +40,17 @@ func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.Server) {
-	mainRouter := chi.NewRouter()
-	mainRouter.Use(metrics.NewMetricsMiddleware(metrics.Get()).Handler)
-	mainRouter.Get("/", p.Negotiate)
-	mainRouter.Get("/records", p.Records)
-	mainRouter.Post("/records", p.ApplyChanges)
-	mainRouter.Post("/adjustendpoints", p.AdjustEndpoints)
+	mainRouter := newMainRouter(config, p)
 
-	mainServer := createHTTPServer(fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort), mainRouter, config.ServerReadTimeout, config.ServerWriteTimeout)
+	// The request deadline cancels the handler at ServerWriteTimeout. The
+	// connection's write deadline gets a little slack on top so the 5xx can
+	// still be written.
+	writeTimeout := config.ServerWriteTimeout
+	if writeTimeout > 0 {
+		writeTimeout += responseSlack
+	}
+
+	mainServer := createHTTPServer(fmt.Sprintf("%s:%d", config.ServerHost, config.ServerPort), mainRouter, config.ServerReadTimeout, writeTimeout)
 	go func() {
 		log.Info("init server", "starting server on addr", mainServer.Addr)
 		if err := mainServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -65,6 +72,35 @@ func Init(config configuration.Config, p *webhook.Webhook) (*http.Server, *http.
 	}()
 
 	return mainServer, healthServer
+}
+
+func newMainRouter(config configuration.Config, p *webhook.Webhook) chi.Router {
+	router := chi.NewRouter()
+	router.Use(metrics.NewMetricsMiddleware(metrics.Get()).Handler)
+	router.Use(requestDeadline(config.ServerWriteTimeout))
+	router.Get("/", p.Negotiate)
+	router.Get("/records", p.Records)
+	router.Post("/records", p.ApplyChanges)
+	router.Post("/adjustendpoints", p.AdjustEndpoints)
+	return router
+}
+
+// requestDeadline cancels a request's context once timeout has passed, so a
+// slow DNScaster call fails and the handler answers with a 5xx which external-dns
+// will retry on the next reconcile loop
+func requestDeadline(timeout time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if timeout <= 0 {
+			return next
+		}
+
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), timeout)
+			defer cancel()
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 func createHTTPServer(addr string, hand http.Handler, readTimeout, writeTimeout time.Duration) *http.Server {

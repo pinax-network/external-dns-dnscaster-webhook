@@ -8,16 +8,12 @@ import (
 )
 
 func TestInitDefaults(t *testing.T) {
-	// Set environment variables for testing
-	t.Setenv("SERVER_READ_TIMEOUT", "1s")
-	t.Setenv("SERVER_WRITE_TIMEOUT", "1s")
-
 	cfg := Init()
 
 	assert.Equal(t, "localhost", cfg.ServerHost)
 	assert.Equal(t, 8888, cfg.ServerPort)
-	assert.Equal(t, 1*time.Second, cfg.ServerReadTimeout)
-	assert.Equal(t, 1*time.Second, cfg.ServerWriteTimeout)
+	assert.Equal(t, time.Duration(0), cfg.ServerReadTimeout)
+	assert.Equal(t, time.Duration(0), cfg.ServerWriteTimeout)
 	assert.Equal(t, []string(nil), cfg.DomainFilter)
 	assert.Equal(t, []string(nil), cfg.ExcludeDomains)
 	assert.Equal(t, "", cfg.RegexDomainFilter)

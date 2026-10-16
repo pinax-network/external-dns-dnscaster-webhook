@@ -11,8 +11,8 @@ import (
 type Config struct {
 	ServerHost           string        `env:"SERVER_HOST" envDefault:"localhost"`
 	ServerPort           int           `env:"SERVER_PORT" envDefault:"8888"`
-	ServerReadTimeout    time.Duration `env:"SERVER_READ_TIMEOUT"`
-	ServerWriteTimeout   time.Duration `env:"SERVER_WRITE_TIMEOUT"`
+	ServerReadTimeout    time.Duration `env:"SERVER_READ_TIMEOUT" envDefault:"0s"`
+	ServerWriteTimeout   time.Duration `env:"SERVER_WRITE_TIMEOUT" envDefault:"0s"`
 	DomainFilter         []string      `env:"DOMAIN_FILTER" envDefault:""`
 	ExcludeDomains       []string      `env:"EXCLUDE_DOMAIN_FILTER" envDefault:""`
 	RegexDomainFilter    string        `env:"REGEXP_DOMAIN_FILTER" envDefault:""`
