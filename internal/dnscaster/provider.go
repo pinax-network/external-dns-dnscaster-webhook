@@ -12,11 +12,25 @@ import (
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/log"
 )
 
+// Client is the subset of the DNScaster API the provider uses.
+// DNScasterApiClient implements it, and dnscastertest provides an in-memory
+// fake for tests.
+type Client interface {
+	ListZones(ctx context.Context) ([]Zone, error)
+	ListHosts(ctx context.Context) ([]Host, error)
+	CreateHost(ctx context.Context, host Host) (Host, error)
+	DeleteHost(ctx context.Context, hostID string) error
+	CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error)
+	DeleteMonitor(ctx context.Context, monitorID string) error
+}
+
 // DNScasterProvider is a helper class for working with dnscaster
 type DNScasterProvider struct {
 	provider.BaseProvider
 
-	client       *DNScasterApiClient
+	client       Client
+	config       *DNScasterConnectionConfig
+	defaults     *DNScasterDefaults
 	domainFilter *endpoint.DomainFilter
 }
 
@@ -31,27 +45,13 @@ type hostsMap = map[hostKey]Host
 type zonesMap = map[string]string
 
 // NewDNScasterProvider initializes a new DNSProvider, of the Dnscaster variety
-func NewDNScasterProvider(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, config *DNScasterConnectionConfig) (provider.Provider, error) {
-	// Create the Dnscaster API Client
-	client, err := NewDNScasterClient(config, defaults)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create the Dnscaster client: %w", err)
-	}
-
-	// If the client connects properly, create the DNS Provider
-	p := &DNScasterProvider{
-		client:       client,
-		domainFilter: domainFilter,
-	}
-
-	return p, nil
-}
-
-func NewDNScasterProviderWithClient(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, client *DNScasterApiClient) (provider.Provider, error) {
+func NewDNScasterProvider(domainFilter *endpoint.DomainFilter, defaults *DNScasterDefaults, config *DNScasterConnectionConfig, client Client) provider.Provider {
 	return &DNScasterProvider{
-		domainFilter: domainFilter,
 		client:       client,
-	}, nil
+		config:       config,
+		defaults:     defaults,
+		domainFilter: domainFilter,
+	}
 }
 
 func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, error) {
@@ -271,7 +271,7 @@ func (p *DNScasterProvider) createMonitorForHost(ctx context.Context, host Host)
 		URI:             u,
 		Hostname:        hostname,
 		TreatRedirects:  host.Properties[ProviderSpecificIPMonitorTreatRedirects],
-		NameserverSetID: p.client.NameserverSetID,
+		NameserverSetID: p.config.NameserverSetID,
 		Properties:      host.Properties,
 	})
 	if err != nil {
@@ -285,14 +285,14 @@ func (p *DNScasterProvider) defaultTTL(record *endpoint.Endpoint) int64 {
 	if record.RecordTTL.IsConfigured() {
 		return int64(record.RecordTTL)
 	}
-	return p.client.DefaultTTL
+	return p.defaults.DefaultTTL
 }
 
 func (p *DNScasterProvider) applyOwnerProperty(properties map[string]string) {
-	if p.client.OwnerID == "" {
+	if p.config.OwnerID == "" {
 		return
 	}
-	properties[ProviderMetadataOwnerID] = p.client.OwnerID
+	properties[ProviderMetadataOwnerID] = p.config.OwnerID
 }
 
 func (p *DNScasterProvider) trimHostnameFromFQDN(record *endpoint.Endpoint) (string, string) {
