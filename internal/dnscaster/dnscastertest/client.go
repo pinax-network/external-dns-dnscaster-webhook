@@ -31,6 +31,8 @@ type Client struct {
 
 	// Optional hooks for test-specific assertions or failures. A non-nil
 	// error fails the call.
+	OnListZones     func() error
+	OnListHosts     func() error
 	OnCreateMonitor func(mon dnscaster.Monitor) error
 	OnCreateHost    func(host dnscaster.Host) error
 	OnDeleteHost    func(hostID string) error
@@ -80,12 +82,24 @@ func (c *Client) ListZones(context.Context) ([]dnscaster.Zone, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.OnListZones != nil {
+		if err := c.OnListZones(); err != nil {
+			return nil, err
+		}
+	}
+
 	return slices.Clone(c.Zones), nil
 }
 
 func (c *Client) ListHosts(context.Context) ([]dnscaster.Host, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.OnListHosts != nil {
+		if err := c.OnListHosts(); err != nil {
+			return nil, err
+		}
+	}
 
 	var hosts []dnscaster.Host
 	for _, zoneHosts := range c.Hosts {
