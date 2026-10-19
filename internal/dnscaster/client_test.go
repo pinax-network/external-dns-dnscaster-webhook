@@ -252,6 +252,10 @@ func TestDoSkipsWritesInDryRun(t *testing.T) {
 		t.Fatalf("expected an empty host, got: %+v", host)
 	}
 
+	if _, err := client.do[Host](context.Background(), http.MethodPut, dnscasterHostPath+"h-1", nil, HostEnvelope{Host: Host{TTL: 120}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
 	if _, err := client.do[noContent](context.Background(), http.MethodDelete, dnscasterHostPath+"h-1", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -545,6 +549,17 @@ func TestClientMethodsSendExpectedRequests(t *testing.T) {
 			response: `{"id":"h-1","zone_id":"z-1","hostname":"app"}`,
 			want:     Host{ID: "h-1", ZoneID: "z-1", Hostname: "app"},
 		},
+		"UpdateHost": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return c.UpdateHost(ctx, "h-1", Host{TTL: 120, Properties: map[string]string{"network": "eos"}})
+			},
+			method:   http.MethodPut,
+			path:     "/v1/hosts/h-1",
+			body:     `{"host":{"ttl":120,"properties":{"network":"eos"}}}`,
+			status:   http.StatusOK,
+			response: `{"id":"h-1","ttl":120,"properties":{"network":"eos"}}`,
+			want:     Host{ID: "h-1", TTL: 120, Properties: map[string]string{"network": "eos"}},
+		},
 		"DeleteHost": {
 			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
 				return nil, c.DeleteHost(ctx, "h-1")
@@ -573,6 +588,17 @@ func TestClientMethodsSendExpectedRequests(t *testing.T) {
 			status:   http.StatusCreated,
 			response: `{"id":"m-1","name":"app.example.com","nameserver_set_id":"ns-1","uri":"ping://1.2.3.4"}`,
 			want:     Monitor{ID: "m-1", Name: "app.example.com", NameserverSetID: "ns-1", URI: "ping://1.2.3.4"},
+		},
+		"UpdateMonitor": {
+			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
+				return c.UpdateMonitor(ctx, "m-1", Monitor{URI: "ping://5.6.7.8", TreatRedirects: "online"})
+			},
+			method:   http.MethodPut,
+			path:     "/v1/ip_monitors/m-1",
+			body:     `{"ip_monitor":{"treat_redirects":"online","uri":"ping://5.6.7.8"}}`,
+			status:   http.StatusOK,
+			response: `{"id":"m-1","treat_redirects":"online","uri":"ping://5.6.7.8"}`,
+			want:     Monitor{ID: "m-1", TreatRedirects: "online", URI: "ping://5.6.7.8"},
 		},
 		"DeleteMonitor": {
 			call: func(ctx context.Context, c *DNScasterApiClient) (any, error) {
