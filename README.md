@@ -135,6 +135,17 @@ This would create an IP Monitor with the following URI: `https://1.1.1.1/health`
 
 ---
 
+A port can be given without a host, and an IPv6 target is bracketed as DNScaster
+expects:
+
+| `ip-monitor-uri`  | Target        | Monitor URI                    |
+| ----------------- | ------------- | ------------------------------ |
+| `tcp://:9876`     | `1.1.1.1`     | `tcp://1.1.1.1:9876`           |
+| `ping`            | `2001:db8::1` | `ping://[2001:db8::1]`         |
+| `https:///health` | `2001:db8::1` | `https://[2001:db8::1]/health` |
+
+---
+
 Of course, it is also possible to directly give a full URI if the IP you wish
 to monitor is known ahead of time. This can be useful when the monitor should
 target a different IP from the managed endpoint.

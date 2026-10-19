@@ -3,6 +3,7 @@ package dnscaster_test
 import (
 	"context"
 	"maps"
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/external-dns/endpoint"
@@ -219,5 +220,50 @@ func TestAnnotationsRejectInvalidMonitorURI(t *testing.T) {
 	}
 	if len(fake.Hosts["z-1"]) != 0 || len(fake.Monitors) != 0 {
 		t.Fatalf("expected nothing to be created, got hosts: %v, monitors: %v", fake.Hosts, fake.Monitors)
+	}
+}
+
+func TestAnnotationsMonitorURITemplating(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		uri, target, want string
+	}{
+		{"https:///v1/chain/get_info", "1.2.3.4", "https://1.2.3.4/v1/chain/get_info"},
+		{"https:///v1/chain/get_info", "2001:db8::1", "https://[2001:db8::1]/v1/chain/get_info"},
+		{"https:/health", "1.2.3.4", "https://1.2.3.4/health"},
+		{"tcp://:9876", "1.2.3.4", "tcp://1.2.3.4:9876"},
+		{"tcp://:9876", "2001:db8::1", "tcp://[2001:db8::1]:9876"},
+		{"ping", "1.2.3.4", "ping://1.2.3.4"},
+		{"ping", "2001:db8::1", "ping://[2001:db8::1]"},
+		{"https://5.6.7.8/health", "1.2.3.4", "https://5.6.7.8/health"},
+		{"https://5.6.7.8/health", "2001:db8::1", "https://5.6.7.8/health"},
+	} {
+		t.Run(tc.uri+" "+tc.target, func(t *testing.T) {
+			t.Parallel()
+
+			p, fake := newTestProvider(t)
+			fake.WithZone("z-1", "example.com")
+
+			var got string
+			fake.OnCreateMonitor = func(monitor dnscaster.Monitor) error {
+				got = monitor.URI
+				return nil
+			}
+
+			recordType := endpoint.RecordTypeA
+			if strings.Contains(tc.target, ":") {
+				recordType = endpoint.RecordTypeAAAA
+			}
+			create := endpoint.NewEndpoint("app.example.com", recordType, tc.target)
+			create.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, tc.uri)
+
+			if err := p.ApplyChanges(context.Background(), &plan.Changes{Create: []*endpoint.Endpoint{create}}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("expected monitor uri %s, got: %s", tc.want, got)
+			}
+		})
 	}
 }

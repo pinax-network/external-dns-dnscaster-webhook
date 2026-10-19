@@ -1,6 +1,7 @@
 package dnscaster
 
 import (
+	"net"
 	"net/url"
 	"strings"
 
@@ -95,18 +96,41 @@ func unescapeLabelKey(s string) string {
 	return s
 }
 
-func formatURI(uri string, host string) (string, error) {
+// monitorURL parses a monitor URI. A bare scheme such as "ping" is read as
+// the scheme rather than as a path.
+func monitorURL(uri string) (*url.URL, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	// Default to scheme instead of path
 	if u.Scheme == "" {
 		u.Scheme = u.Path
 		u.Path = ""
 	}
-	if u.Host == "" {
-		u.Host = host
+	return u, nil
+}
+
+// formatURI fills in the host of a monitor URI that has none with target,
+// keeping any port. IPv6 targets are bracketed, as DNScaster expects.
+func formatURI(uri string, target string) (string, error) {
+	u, err := monitorURL(uri)
+	if err != nil {
+		return "", err
+	}
+	if u.Hostname() == "" {
+		u.Host = joinHostPort(target, u.Port())
 	}
 	return u.String(), nil
+}
+
+// joinHostPort is net.JoinHostPort that also brackets an IPv6 host without a
+// port.
+func joinHostPort(host, port string) string {
+	if port != "" {
+		return net.JoinHostPort(host, port)
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }
