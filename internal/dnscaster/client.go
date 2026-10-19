@@ -143,6 +143,18 @@ func (c *DNScasterApiClient) CreateHost(ctx context.Context, host Host) (Host, e
 	return out, nil
 }
 
+// UpdateHost changes the fields set in host and leaves the others as they
+// are, except properties, which the API replaces as a whole.
+func (c *DNScasterApiClient) UpdateHost(ctx context.Context, hostID string, host Host) (Host, error) {
+	out, err := c.do[Host](ctx, http.MethodPut, dnscasterHostPath+hostID, nil, HostEnvelope{Host: host})
+	if err != nil {
+		return out, fmt.Errorf("failed to update host: %w", err)
+	}
+
+	log.Debug("UpdateHost", "host", out)
+	return out, nil
+}
+
 func (c *DNScasterApiClient) DeleteHost(ctx context.Context, hostID string) error {
 	if _, err := c.do[noContent](ctx, http.MethodDelete, dnscasterHostPath+hostID, nil, nil); err != nil {
 		return fmt.Errorf("failed to delete host: %w", err)
@@ -169,6 +181,18 @@ func (c *DNScasterApiClient) CreateMonitor(ctx context.Context, monitor Monitor)
 	}
 
 	log.Debug("CreateMonitor", "monitor", out)
+	return out, nil
+}
+
+// UpdateMonitor changes the fields set in monitor and leaves the others as
+// they are, except properties, which the API replaces as a whole.
+func (c *DNScasterApiClient) UpdateMonitor(ctx context.Context, monitorID string, monitor Monitor) (Monitor, error) {
+	out, err := c.do[Monitor](ctx, http.MethodPut, dnscasterMonitorPath+monitorID, nil, MonitorEnvelope{Monitor: monitor})
+	if err != nil {
+		return out, fmt.Errorf("failed to update monitor: %w", err)
+	}
+
+	log.Debug("UpdateMonitor", "monitor", out)
 	return out, nil
 }
 

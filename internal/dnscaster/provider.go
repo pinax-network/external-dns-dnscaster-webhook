@@ -19,8 +19,10 @@ type Client interface {
 	ListZones(ctx context.Context) ([]Zone, error)
 	ListHosts(ctx context.Context) ([]Host, error)
 	CreateHost(ctx context.Context, host Host) (Host, error)
+	UpdateHost(ctx context.Context, hostID string, host Host) (Host, error)
 	DeleteHost(ctx context.Context, hostID string) error
 	CreateMonitor(ctx context.Context, monitor Monitor) (Monitor, error)
+	UpdateMonitor(ctx context.Context, monitorID string, monitor Monitor) (Monitor, error)
 	DeleteMonitor(ctx context.Context, monitorID string) error
 }
 

@@ -4,6 +4,7 @@ package dnscastertest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
@@ -35,7 +36,9 @@ type Client struct {
 	OnListHosts     func() error
 	OnCreateMonitor func(mon dnscaster.Monitor) error
 	OnCreateHost    func(host dnscaster.Host) error
+	OnUpdateHost    func(hostID string, host dnscaster.Host) error
 	OnDeleteHost    func(hostID string) error
+	OnUpdateMonitor func(monitorID string, mon dnscaster.Monitor) error
 	OnDeleteMonitor func(monitorID string) error
 }
 
@@ -131,6 +134,36 @@ func (c *Client) CreateHost(_ context.Context, host dnscaster.Host) (dnscaster.H
 	return host, nil
 }
 
+// UpdateHost applies the fields set in host to the stored host.
+func (c *Client) UpdateHost(_ context.Context, hostID string, host dnscaster.Host) (dnscaster.Host, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.OnUpdateHost != nil {
+		if err := c.OnUpdateHost(hostID, host); err != nil {
+			return dnscaster.Host{}, err
+		}
+	}
+
+	for zoneID, hosts := range c.Hosts {
+		for i, stored := range hosts {
+			if stored.ID != hostID {
+				continue
+			}
+			if host.Properties != nil {
+				stored.Properties = nil
+			}
+			updated, err := patch(stored, host)
+			if err != nil {
+				return dnscaster.Host{}, err
+			}
+			c.Hosts[zoneID][i] = updated
+			return updated, nil
+		}
+	}
+	return dnscaster.Host{}, fmt.Errorf("host %q not found", hostID)
+}
+
 func (c *Client) DeleteHost(_ context.Context, hostID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -170,6 +203,32 @@ func (c *Client) CreateMonitor(_ context.Context, mon dnscaster.Monitor) (dnscas
 	return mon, nil
 }
 
+// UpdateMonitor applies the fields set in mon to the stored monitor.
+func (c *Client) UpdateMonitor(_ context.Context, monitorID string, mon dnscaster.Monitor) (dnscaster.Monitor, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.OnUpdateMonitor != nil {
+		if err := c.OnUpdateMonitor(monitorID, mon); err != nil {
+			return dnscaster.Monitor{}, err
+		}
+	}
+
+	stored, ok := c.Monitors[monitorID]
+	if !ok {
+		return dnscaster.Monitor{}, fmt.Errorf("monitor %q not found", monitorID)
+	}
+	if mon.Properties != nil {
+		stored.Properties = nil
+	}
+	updated, err := patch(stored, mon)
+	if err != nil {
+		return dnscaster.Monitor{}, err
+	}
+	c.Monitors[monitorID] = updated
+	return updated, nil
+}
+
 func (c *Client) DeleteMonitor(_ context.Context, monitorID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -185,4 +244,18 @@ func (c *Client) DeleteMonitor(_ context.Context, monitorID string) error {
 	}
 	delete(c.Monitors, monitorID)
 	return nil
+}
+
+// patch overlays update onto stored the way the API applies a PUT: fields
+// left out of the JSON body keep their value. Properties are replaced as a
+// whole on the API, so callers clear them first when update carries some.
+func patch[T any](stored, update T) (T, error) {
+	body, err := json.Marshal(update)
+	if err != nil {
+		return stored, err
+	}
+	if err := json.Unmarshal(body, &stored); err != nil {
+		return stored, err
+	}
+	return stored, nil
 }
