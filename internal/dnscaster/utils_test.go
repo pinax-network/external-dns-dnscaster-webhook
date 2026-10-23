@@ -1,9 +1,11 @@
 package dnscaster_test
 
 import (
+	"context"
 	"testing"
 
 	"sigs.k8s.io/external-dns/endpoint"
+	"sigs.k8s.io/external-dns/plan"
 	"sigs.k8s.io/external-dns/provider"
 
 	"github.com/pinax-network/external-dns-dnscaster-webhook/internal/dnscaster"
@@ -36,4 +38,21 @@ func baseDefaults() *dnscaster.DNScasterDefaults {
 	return &dnscaster.DNScasterDefaults{
 		DefaultTTL: 600,
 	}
+}
+
+// syncChanges plans the changes external-dns would send to bring p's records
+// in line with desired, as a sync with the noop registry does.
+func syncChanges(t *testing.T, p provider.Provider, desired ...*endpoint.Endpoint) *plan.Changes {
+	t.Helper()
+
+	current, err := p.Records(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error listing records: %v", err)
+	}
+	return (&plan.Plan{
+		Current:        current,
+		Desired:        desired,
+		Policies:       []plan.Policy{&plan.SyncPolicy{}},
+		ManagedRecords: []string{endpoint.RecordTypeA, endpoint.RecordTypeAAAA, endpoint.RecordTypeCNAME},
+	}).Calculate().Changes
 }

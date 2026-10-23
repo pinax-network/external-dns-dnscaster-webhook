@@ -9,12 +9,14 @@ spec:
       recordType: A
       targets:
         - 1.1.1.1
+        - 1.0.0.1
       providerSpecific:
         - name: webhook/dnscaster-ip-monitor-uri
           value: ping
-        - name: webhook/dnscaster-ip-monitor-treat_redirects
-          value: online
-        - name: webhook/dnscaster-label-network
-          value: ethereum
-        - name: webhook/dnscaster-label-registry~1name # label with '/'
-          value: mainnet
+    - dnsName: crds.dnstest.pinax.network
+      recordType: AAAA
+      targets:
+        - 2606:4700:4700::1111
+      providerSpecific:
+        - name: webhook/dnscaster-ip-monitor-uri
+          value: ping

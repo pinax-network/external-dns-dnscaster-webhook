@@ -3,6 +3,7 @@ package dnscaster
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"sigs.k8s.io/external-dns/endpoint"
@@ -36,10 +37,17 @@ type DNScasterProvider struct {
 	domainFilter *endpoint.DomainFilter
 }
 
-// hostKey identifies a host the way external-dns identifies a record.
+// recordKey identifies a record the way external-dns does. DNScaster holds a
+// host per target, so the hosts sharing a recordKey make up one record.
+type recordKey struct {
+	FQDN          string
+	Type          string
+	SetIdentifier string
+}
+
+// hostKey identifies the host behind one target of a record.
 type hostKey struct {
-	FQDN   string
-	Type   string
+	recordKey
 	Target string
 }
 
@@ -62,26 +70,40 @@ func (p *DNScasterProvider) Records(ctx context.Context) ([]*endpoint.Endpoint, 
 		return nil, err
 	}
 
+	// The hosts of a record are merged into one record holding their
+	// targets, which takes the TTL and properties of its first host.
+	byKey := make(map[recordKey]*endpoint.Endpoint)
 	records := make([]*endpoint.Endpoint, 0, len(hosts))
 	for _, host := range hosts {
-		if p.domainFilter.Match(host.FQDN) {
-			records = append(records, p.endpointForHost(host))
+		if !p.domainFilter.Match(host.FQDN) {
+			continue
 		}
+
+		key := keyForHost(host).recordKey
+		if record, ok := byKey[key]; ok {
+			record.Targets = append(record.Targets, host.Data)
+			continue
+		}
+
+		record := p.endpointForHost(host)
+		byKey[key] = record
+		records = append(records, record)
 	}
 	return records, nil
 }
 
 // ApplyChanges applies deletions, then updates, then creations, so a target
-// freed by a deletion is available to the changes after it. Updates change
-// the existing host and its monitor in place: UpdateOld[i] and UpdateNew[i]
-// describe the same record, as external-dns' plan builds them.
+// freed by a deletion is available to the changes after it. A record maps to
+// one host per target. Updates change the existing hosts and their monitors
+// in place: UpdateOld[i] and UpdateNew[i] describe the same record, as
+// external-dns' plan builds them.
 func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Changes) error {
 	if len(changes.UpdateOld) != len(changes.UpdateNew) {
 		return fmt.Errorf("malformed changes: %d records to update but %d desired states", len(changes.UpdateOld), len(changes.UpdateNew))
 	}
 
-	// Deletions and updates both need the ID of the host behind a record, so
-	// the owner's hosts are listed once for the whole batch.
+	// Deletions and updates both need the IDs of the hosts behind a record,
+	// so the owner's hosts are listed once for the whole batch.
 	var hosts hostIndex
 	if len(changes.Delete)+len(changes.UpdateOld) > 0 {
 		var err error
@@ -93,41 +115,41 @@ func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 	for _, record := range changes.Delete {
 		log.Debug("applyDelete", "record", record)
 
-		host, err := hosts.find(record)
+		current, err := hosts.find(record)
 		if err != nil {
 			return err
 		}
-		if err := p.deleteHost(ctx, host); err != nil {
-			return err
-		}
-	}
-
-	creates := changes.Create
-	for i, record := range changes.UpdateOld {
-		host, err := hosts.find(record)
-		if err != nil {
-			return err
-		}
-		desired, err := p.hostForEndpoint(changes.UpdateNew[i])
-		if err != nil {
-			return err
-		}
-
-		// An update leaves out empty fields, so it cannot detach a monitor
-		// from its host, and a monitor in use cannot be deleted. A host
-		// losing its monitor is replaced instead.
-		if host.IPMonitorID != "" && !wantsMonitor(desired) {
-			log.Debug("applyUpdate", "replacing host losing its monitor", host.ID, "record", changes.UpdateNew[i])
+		for _, host := range current {
 			if err := p.deleteHost(ctx, host); err != nil {
 				return err
 			}
-			creates = append(creates, changes.UpdateNew[i])
-			continue
 		}
+	}
 
-		if err := p.applyUpdate(ctx, host, desired); err != nil {
+	var creates []Host
+	for _, record := range changes.Create {
+		desired, err := p.hostsForEndpoint(record)
+		if err != nil {
 			return err
 		}
+		creates = append(creates, desired...)
+	}
+
+	for i, record := range changes.UpdateOld {
+		current, err := hosts.find(record)
+		if err != nil {
+			return err
+		}
+		desired, err := p.hostsForEndpoint(changes.UpdateNew[i])
+		if err != nil {
+			return err
+		}
+
+		missing, err := p.applyUpdate(ctx, current, desired)
+		if err != nil {
+			return err
+		}
+		creates = append(creates, missing...)
 	}
 
 	if len(creates) == 0 {
@@ -139,8 +161,8 @@ func (p *DNScasterProvider) ApplyChanges(ctx context.Context, changes *plan.Chan
 		return err
 	}
 
-	for _, record := range creates {
-		if err := p.applyCreate(ctx, record, zones); err != nil {
+	for _, host := range creates {
+		if err := p.applyCreate(ctx, host, zones); err != nil {
 			return err
 		}
 	}
@@ -153,16 +175,11 @@ func (p *DNScasterProvider) GetDomainFilter() endpoint.DomainFilterInterface {
 	return p.domainFilter
 }
 
-func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.Endpoint, zones provider.ZoneIDName) error {
-	log.Debug("applyCreate", "record", record)
+func (p *DNScasterProvider) applyCreate(ctx context.Context, host Host, zones provider.ZoneIDName) error {
+	log.Debug("applyCreate", "host", host)
 
-	host, err := p.hostForEndpoint(record)
-	if err != nil {
-		return err
-	}
-
-	zoneID, zoneName := zones.FindZone(record.DNSName)
-	host.Hostname = hostnameInZone(record.DNSName, zoneName)
+	zoneID, zoneName := zones.FindZone(host.FQDN)
+	host.Hostname = hostnameInZone(host.FQDN, zoneName)
 	host.ZoneID = zoneID
 
 	monitorID, err := p.applyMonitor(ctx, host, "")
@@ -178,11 +195,80 @@ func (p *DNScasterProvider) applyCreate(ctx context.Context, record *endpoint.En
 	return err
 }
 
-// applyUpdate changes host in place so it matches desired, along with its
+// applyUpdate brings current, the hosts behind a record, in line with
+// desired, its new hosts. A host whose target is still desired keeps it, and
+// hosts whose target was dropped take over the new targets, so hosts and
+// monitors keep their IDs as far as the targets allow. Hosts left over are
+// deleted. The desired hosts left over are returned for applyCreate.
+func (p *DNScasterProvider) applyUpdate(ctx context.Context, current, desired []Host) ([]Host, error) {
+	// The desired hosts by target, until a current host takes them.
+	wanted := make(map[string]Host, len(desired))
+	for _, want := range desired {
+		wanted[hostData(want.Data)] = want
+	}
+
+	type update struct{ host, want Host }
+	var updates []update
+	var freed []Host
+	for _, host := range current {
+		if want, ok := wanted[host.Data]; ok {
+			updates = append(updates, update{host: host, want: want})
+			delete(wanted, host.Data)
+		} else {
+			freed = append(freed, host)
+		}
+	}
+
+	var added []Host
+	for _, want := range desired {
+		if _, ok := wanted[hostData(want.Data)]; !ok {
+			continue
+		}
+		if len(freed) == 0 {
+			added = append(added, want)
+			continue
+		}
+		updates = append(updates, update{host: freed[0], want: want})
+		freed = freed[1:]
+	}
+
+	for _, host := range freed {
+		log.Debug("applyUpdate", "deleting host of dropped target", host.ID, "target", host.Data)
+		if err := p.deleteHost(ctx, host); err != nil {
+			return nil, err
+		}
+	}
+
+	for _, u := range updates {
+		switch {
+		case upToDate(u.host, u.want):
+			continue
+
+		// An update leaves out empty fields, so it cannot detach a monitor
+		// from its host, and a monitor in use cannot be deleted. A host
+		// losing its monitor is replaced instead.
+		case u.host.IPMonitorID != "" && !wantsMonitor(u.want):
+			log.Debug("applyUpdate", "replacing host losing its monitor", u.host.ID, "desired", u.want)
+			if err := p.deleteHost(ctx, u.host); err != nil {
+				return nil, err
+			}
+			added = append(added, u.want)
+
+		default:
+			if err := p.updateHost(ctx, u.host, u.want); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return added, nil
+}
+
+// updateHost changes host in place so it matches desired, along with its
 // monitor. The host keeps its ID, zone and hostname: an update is only ever
 // sent for the record's own FQDN.
-func (p *DNScasterProvider) applyUpdate(ctx context.Context, host Host, desired Host) error {
-	log.Debug("applyUpdate", "host.id", host.ID, "desired", desired)
+func (p *DNScasterProvider) updateHost(ctx context.Context, host Host, desired Host) error {
+	log.Debug("updateHost", "host.id", host.ID, "desired", desired)
 
 	// The monitor goes first. Should the host update then fail, external-dns
 	// sends the whole update again on its next sync, whereas a host updated
@@ -253,23 +339,40 @@ func (p *DNScasterProvider) indexHosts(ctx context.Context) (hostIndex, error) {
 
 	index := make(hostIndex, len(hosts))
 	for _, h := range hosts {
-		index[hostKey{FQDN: h.FQDN, Type: h.DNSType, Target: h.Data}] = h
+		index[keyForHost(h)] = h
 	}
 	return index, nil
 }
 
-// find returns the host behind record.
-func (index hostIndex) find(record *endpoint.Endpoint) (Host, error) {
+// find returns the hosts behind the targets of record.
+func (index hostIndex) find(record *endpoint.Endpoint) ([]Host, error) {
 	if len(record.Targets) == 0 {
-		return Host{}, fmt.Errorf("no target set on record: %v", record)
+		return nil, fmt.Errorf("no target set on record: %v", record)
 	}
 
-	key := hostKey{FQDN: record.DNSName, Type: record.RecordType, Target: strings.Trim(record.Targets[0], `\"`)}
-	host, ok := index[key]
-	if !ok {
-		return Host{}, fmt.Errorf("no host found for record: %v", record)
+	key := recordKey{FQDN: record.DNSName, Type: record.RecordType, SetIdentifier: record.SetIdentifier}
+	hosts := make([]Host, 0, len(record.Targets))
+	for _, target := range record.Targets {
+		host, ok := index[hostKey{recordKey: key, Target: hostData(target)}]
+		if !ok {
+			return nil, fmt.Errorf("no host found for target %s of record: %v", target, record)
+		}
+		hosts = append(hosts, host)
 	}
-	return host, nil
+	return hosts, nil
+}
+
+// keyForHost returns the hostKey of host.
+func keyForHost(host Host) hostKey {
+	return hostKey{
+		recordKey: recordKey{FQDN: host.FQDN, Type: host.DNSType, SetIdentifier: host.Properties[ProviderMetadataSetIdentifier]},
+		Target:    host.Data,
+	}
+}
+
+// hostData returns target the way the API stores it in a host's data.
+func hostData(target string) string {
+	return strings.Trim(target, `\"`)
 }
 
 // managedZones returns the DNScaster zones matching the domain filter.
@@ -292,11 +395,12 @@ func (p *DNScasterProvider) managedZones(ctx context.Context) (provider.ZoneIDNa
 	return managed, nil
 }
 
-// hostForEndpoint builds the host record asks for, with the properties the
-// provider adds. The zone and hostname are left for applyCreate to fill in.
-func (p *DNScasterProvider) hostForEndpoint(record *endpoint.Endpoint) (Host, error) {
+// hostsForEndpoint builds the hosts record asks for, one per target, with the
+// properties the provider adds. The zone and hostname are left for
+// applyCreate to fill in.
+func (p *DNScasterProvider) hostsForEndpoint(record *endpoint.Endpoint) ([]Host, error) {
 	if len(record.Targets) == 0 {
-		return Host{}, fmt.Errorf("no target set on record: %v", record)
+		return nil, fmt.Errorf("no target set on record: %v", record)
 	}
 
 	properties := extractProperties(record.ProviderSpecific)
@@ -307,13 +411,17 @@ func (p *DNScasterProvider) hostForEndpoint(record *endpoint.Endpoint) (Host, er
 		properties[ProviderMetadataSetIdentifier] = record.SetIdentifier
 	}
 
-	return Host{
-		Data:       record.Targets[0],
-		DNSType:    record.RecordType,
-		FQDN:       record.DNSName,
-		TTL:        p.defaultTTL(record),
-		Properties: properties,
-	}, nil
+	hosts := make([]Host, 0, len(record.Targets))
+	for _, target := range record.Targets {
+		hosts = append(hosts, Host{
+			Data:       target,
+			DNSType:    record.RecordType,
+			FQDN:       record.DNSName,
+			TTL:        p.defaultTTL(record),
+			Properties: maps.Clone(properties),
+		})
+	}
+	return hosts, nil
 }
 
 func (p *DNScasterProvider) endpointForHost(host Host) *endpoint.Endpoint {
@@ -327,6 +435,16 @@ func (p *DNScasterProvider) endpointForHost(host Host) *endpoint.Endpoint {
 
 	log.Debug("endpointFromHost", "endpoint", endpoint)
 	return endpoint
+}
+
+// upToDate reports whether host already matches desired, so neither it nor
+// its monitor needs an update. The monitor is built from the host's target
+// and properties, and updateHost updates it first, so it is up to date too.
+func upToDate(host, desired Host) bool {
+	return host.Data == hostData(desired.Data) &&
+		host.TTL == desired.TTL &&
+		maps.Equal(host.Properties, desired.Properties) &&
+		(host.IPMonitorID != "") == wantsMonitor(desired)
 }
 
 // wantsMonitor reports whether host asks for a monitor through its

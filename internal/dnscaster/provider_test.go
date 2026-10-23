@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -73,7 +74,7 @@ func TestDefaultTTLFallsBackToProviderDefault(t *testing.T) {
 	}
 }
 
-func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
+func TestHostsForEndpointCreatesAHostPerTarget(t *testing.T) {
 	t.Parallel()
 
 	p, fake := newTestProvider(t)
@@ -81,13 +82,12 @@ func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
 	fake.
 		WithZone("z-1", "example.com")
 
+	var targets []string
 	fake.OnCreateHost = func(host dnscaster.Host) error {
-		if host.Data != "1.2.3.4" {
-			t.Fatalf("expected first target to be 1.2.3.4, got: %s", host.Data)
-		}
 		if host.TTL != 450 {
 			t.Fatalf("expected configured TTL: %d, got: %d", 450, host.TTL)
 		}
+		targets = append(targets, host.Data)
 		return nil
 	}
 
@@ -99,6 +99,9 @@ func TestHostsForEndpointUsesFirstTargetAndComputedTTL(t *testing.T) {
 
 	if err := p.ApplyChanges(context.Background(), changes); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(targets, []string{"1.2.3.4", "5.6.7.8"}) {
+		t.Fatalf("expected a host per target, got: %v", targets)
 	}
 }
 
@@ -1065,6 +1068,179 @@ func TestProviderApplyChangesUpdateErrors(t *testing.T) {
 		}
 		if len(fake.Monitors) != 0 {
 			t.Fatalf("expected the monitor to be deleted, got: %v", fake.Monitors)
+		}
+	})
+}
+
+func TestProviderMultiTargetRecords(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	owner := map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"}
+	monitored := map[string]string{
+		dnscaster.ProviderMetadataOwnerID:      "controller-1",
+		dnscaster.ProviderSpecificIPMonitorURI: "ping",
+	}
+
+	pingRecord := func(targets ...string) *endpoint.Endpoint {
+		record := endpoint.NewEndpoint("app.example.com", "A", targets...)
+		record.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+		return record
+	}
+	// withPingHosts adds the hosts pingRecord(targets...) is made of, each
+	// with its own monitor: h-<target> uses m-<target>.
+	withPingHosts := func(fake *dnscastertest.Client, targets ...string) {
+		for _, target := range targets {
+			fake.
+				WithHost(dnscaster.Host{
+					ID:          "h-" + target,
+					ZoneID:      "z-1",
+					FQDN:        "app.example.com",
+					Hostname:    "app",
+					DNSType:     "A",
+					Data:        target,
+					TTL:         600,
+					IPMonitorID: "m-" + target,
+					Properties:  maps.Clone(monitored),
+				}).
+				WithMonitor(dnscaster.Monitor{ID: "m-" + target, URI: "ping://" + target})
+		}
+	}
+	apply := func(t *testing.T, p provider.Provider, changes *plan.Changes) {
+		t.Helper()
+		if err := p.ApplyChanges(ctx, changes); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	t.Run("creates a host and a monitor per target", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.WithZone("z-1", "example.com")
+
+		apply(t, p, syncChanges(t, p, pingRecord("1.1.1.1", "2.2.2.2")))
+
+		if len(fake.Hosts["z-1"]) != 2 || len(fake.Monitors) != 2 {
+			t.Fatalf("expected 2 hosts and 2 monitors, got: %v and %v", fake.Hosts["z-1"], fake.Monitors)
+		}
+		for _, host := range fake.Hosts["z-1"] {
+			if monitor := fake.Monitors[host.IPMonitorID]; monitor.URI != "ping://"+host.Data {
+				t.Fatalf("expected host %s to have its own monitor, got: %+v", host.Data, monitor)
+			}
+		}
+
+		// Records merges the hosts back into one record, so the next sync has
+		// nothing to do.
+		if changes := syncChanges(t, p, pingRecord("1.1.1.1", "2.2.2.2")); changes.HasChanges() {
+			t.Fatalf("expected no changes, got: %+v", changes)
+		}
+	})
+
+	t.Run("merges hosts by name, type and set identifier", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		blue := map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1", dnscaster.ProviderMetadataSetIdentifier: "blue"}
+		fake.
+			WithZone("z-1", "example.com").
+			WithHost(dnscaster.Host{ID: "h-1", ZoneID: "z-1", FQDN: "app.example.com", DNSType: "A", Data: "1.1.1.1", TTL: 600, Properties: maps.Clone(owner)}).
+			WithHost(dnscaster.Host{ID: "h-2", ZoneID: "z-1", FQDN: "app.example.com", DNSType: "A", Data: "2.2.2.2", TTL: 600, Properties: maps.Clone(owner)}).
+			WithHost(dnscaster.Host{ID: "h-3", ZoneID: "z-1", FQDN: "app.example.com", DNSType: "AAAA", Data: "2001:db8::1", TTL: 600, Properties: maps.Clone(owner)}).
+			WithHost(dnscaster.Host{ID: "h-4", ZoneID: "z-1", FQDN: "app.example.com", DNSType: "A", Data: "3.3.3.3", TTL: 600, Properties: blue})
+
+		records, err := p.Records(ctx)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		got := map[string][]string{}
+		for _, record := range records {
+			got[record.RecordType+"/"+record.SetIdentifier] = record.Targets
+		}
+		want := map[string][]string{
+			"A/":     {"1.1.1.1", "2.2.2.2"},
+			"AAAA/":  {"2001:db8::1"},
+			"A/blue": {"3.3.3.3"},
+		}
+		if len(records) != len(want) || !maps.EqualFunc(got, want, slices.Equal[[]string]) {
+			t.Fatalf("expected records %v, got: %v", want, records)
+		}
+	})
+
+	t.Run("deletes every host and monitor of a record", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.WithZone("z-1", "example.com")
+		withPingHosts(fake, "1.1.1.1", "2.2.2.2")
+
+		apply(t, p, syncChanges(t, p))
+
+		if len(fake.Hosts["z-1"]) != 0 || len(fake.Monitors) != 0 {
+			t.Fatalf("expected no hosts and no monitors, got: %v and %v", fake.Hosts["z-1"], fake.Monitors)
+		}
+	})
+
+	t.Run("keeps hosts whose target stays and moves the others to the new targets", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.WithZone("z-1", "example.com")
+		withPingHosts(fake, "1.1.1.1", "2.2.2.2")
+
+		fake.OnListZones = func() error { t.Fatal("unexpected call to ListZones()"); return nil }
+		fake.OnCreateHost = func(dnscaster.Host) error { t.Fatal("unexpected call to CreateHost()"); return nil }
+		fake.OnDeleteHost = func(string) error { t.Fatal("unexpected call to DeleteHost()"); return nil }
+		fake.OnCreateMonitor = func(dnscaster.Monitor) error { t.Fatal("unexpected call to CreateMonitor()"); return nil }
+		fake.OnDeleteMonitor = func(string) error { t.Fatal("unexpected call to DeleteMonitor()"); return nil }
+		var updated []string
+		fake.OnUpdateHost = func(hostID string, _ dnscaster.Host) error {
+			updated = append(updated, hostID)
+			return nil
+		}
+
+		apply(t, p, syncChanges(t, p, pingRecord("2.2.2.2", "3.3.3.3")))
+
+		// 2.2.2.2 is already up to date, so it costs no API call.
+		if !slices.Equal(updated, []string{"h-1.1.1.1"}) {
+			t.Fatalf("expected only h-1.1.1.1 to be updated, got: %v", updated)
+		}
+		for _, host := range fake.Hosts["z-1"] {
+			if host.ID == "h-1.1.1.1" && host.Data != "3.3.3.3" {
+				t.Fatalf("expected h-1.1.1.1 to move to 3.3.3.3, got: %+v", host)
+			}
+		}
+		if monitor := fake.Monitors["m-1.1.1.1"]; monitor.URI != "ping://3.3.3.3" {
+			t.Fatalf("expected m-1.1.1.1 to follow its host, got: %+v", monitor)
+		}
+		if changes := syncChanges(t, p, pingRecord("2.2.2.2", "3.3.3.3")); changes.HasChanges() {
+			t.Fatalf("expected no changes, got: %+v", changes)
+		}
+	})
+
+	t.Run("creates new targets and deletes dropped ones", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.WithZone("z-1", "example.com")
+		withPingHosts(fake, "1.1.1.1")
+
+		fake.OnUpdateHost = func(string, dnscaster.Host) error { t.Fatal("unexpected call to UpdateHost()"); return nil }
+		fake.OnUpdateMonitor = func(string, dnscaster.Monitor) error { t.Fatal("unexpected call to UpdateMonitor()"); return nil }
+
+		apply(t, p, syncChanges(t, p, pingRecord("1.1.1.1", "2.2.2.2")))
+		if len(fake.Hosts["z-1"]) != 2 || len(fake.Monitors) != 2 {
+			t.Fatalf("expected 2 hosts and 2 monitors, got: %v and %v", fake.Hosts["z-1"], fake.Monitors)
+		}
+
+		apply(t, p, syncChanges(t, p, pingRecord("2.2.2.2")))
+		hosts := fake.Hosts["z-1"]
+		if len(hosts) != 1 || hosts[0].Data != "2.2.2.2" {
+			t.Fatalf("expected the 2.2.2.2 host only, got: %v", hosts)
+		}
+		if _, ok := fake.Monitors[hosts[0].IPMonitorID]; !ok || len(fake.Monitors) != 1 {
+			t.Fatalf("expected the monitor of 2.2.2.2 only, got: %v", fake.Monitors)
 		}
 	})
 }
