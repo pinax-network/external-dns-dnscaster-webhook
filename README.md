@@ -16,10 +16,6 @@ to your DNScaster service provider.
 
 ## Limitations
 
-- DNScaster doesn't support multiple targets for a single record.
-  When records are parsed, only the first target will be added by this provider.
-  If an endpoint needs multiple target, you must create multiple records.
-
 - Targeting multiple Nameserver Set is not supported. A single NameserverSet ID
   must be given through an ENV var at runtime.
 
@@ -30,16 +26,25 @@ to your DNScaster service provider.
 ExternalDNS sends the webhook batches of records to create, update and delete.
 They are applied in this order: deletions, then updates, then creations.
 
-- A deleted record removes its host, then the monitor the host used.
-- An updated record changes its host in place with `PUT`: data, TTL and
-  properties are sent, and its monitor is updated the same way, so the host and
-  monitor keep their IDs. A record gaining a monitor annotation gets a new
-  monitor. A record losing it is deleted and created again, as the update cannot
-  detach the monitor from the host, and a monitor in use cannot be deleted.
-- A created record gets its monitor first, then its host.
+A DNScaster host holds a single target, so a record with several targets, such
+as a Service with more than one load balancer IP, is kept as one host per
+target, all sharing the record's name. Each host gets its own monitor, so
+DNScaster hides the targets that go offline and keeps answering with the
+others. The webhook reports these hosts to external-dns as a single record.
+
+- A deleted record removes its hosts, then the monitors they used.
+- An updated record changes its hosts in place with `PUT`: data, TTL and
+  properties are sent, and their monitors are updated the same way, so hosts
+  and monitors keep their IDs. A host whose target is kept is only updated when
+  its TTL or properties change. A host whose target was dropped takes over one
+  of the new targets, or is deleted when none is left. New targets left over get
+  new hosts. A host gaining a monitor annotation gets a new monitor. A host
+  losing it is deleted and created again, as the update cannot detach the
+  monitor from the host, and a monitor in use cannot be deleted.
+- A created record gets a monitor first, then a host, for each target.
 
 Properties are replaced as a whole on every update, so labels removed from the
-annotations are removed from the host and its monitor too.
+annotations are removed from the hosts and their monitors too.
 
 ## Configuration Options
 
@@ -176,6 +181,8 @@ metadata:
 ```
 
 This would create an IP Monitor with the following URI: `ping://1.2.3.4`.
+A record with several targets still gets one monitor per host, so each of
+them would watch `1.2.3.4`.
 
 ---
 
