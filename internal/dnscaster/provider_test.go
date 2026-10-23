@@ -3,6 +3,7 @@ package dnscaster_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"regexp"
 	"strings"
 	"testing"
@@ -505,8 +506,8 @@ func TestProviderApplyChanges(t *testing.T) {
 		if req.URI != "https://5.6.7.8" {
 			t.Fatalf("expected uri=https://5.6.7.8, got %q", req.URI)
 		}
-		if req.TreatRedirects != "" {
-			t.Fatalf("expected treat_redirects='', got %q", req.TreatRedirects)
+		if req.TreatRedirects != "online" {
+			t.Fatalf("expected treat_redirects=online, got %q", req.TreatRedirects)
 		}
 		return nil
 	}
@@ -566,6 +567,19 @@ func TestProviderApplyChanges(t *testing.T) {
 			t.Fatalf("expected no target error, got: %v", err)
 		}
 	})
+
+	t.Run("should error when deleting an unknown record", func(t *testing.T) {
+		t.Parallel()
+
+		changes := &plan.Changes{
+			Delete: []*endpoint.Endpoint{endpoint.NewEndpoint("unknown.example.com", "A", "9.9.9.9")},
+		}
+
+		err := p.ApplyChanges(context.Background(), changes)
+		if err == nil || !strings.Contains(err.Error(), "no host found") {
+			t.Fatalf("expected a not found error, got: %v", err)
+		}
+	})
 }
 
 func TestProviderApplyChangesNoMonitors(t *testing.T) {
@@ -614,6 +628,9 @@ func TestProviderApplyChangesReturnsClientErrors(t *testing.T) {
 	createWithMonitor := endpoint.NewEndpoint("new.example.com", "A", "5.6.7.8")
 	createWithMonitor.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
 	deleteExisting := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+	updateWithMonitor := endpoint.NewEndpoint("app.example.com", "A", "5.6.7.8")
+	updateWithMonitor.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+	update := &plan.Changes{UpdateOld: []*endpoint.Endpoint{deleteExisting}, UpdateNew: []*endpoint.Endpoint{updateWithMonitor}}
 
 	for name, tc := range map[string]struct {
 		fail    func(*dnscastertest.Client)
@@ -638,6 +655,16 @@ func TestProviderApplyChangesReturnsClientErrors(t *testing.T) {
 		"delete monitor": {
 			fail:    func(c *dnscastertest.Client) { c.OnDeleteMonitor = func(string) error { return boom } },
 			changes: &plan.Changes{Delete: []*endpoint.Endpoint{deleteExisting}},
+		},
+		"update host": {
+			fail:    func(c *dnscastertest.Client) { c.OnUpdateHost = func(string, dnscaster.Host) error { return boom } },
+			changes: update,
+		},
+		"update monitor": {
+			fail: func(c *dnscastertest.Client) {
+				c.OnUpdateMonitor = func(string, dnscaster.Monitor) error { return boom }
+			},
+			changes: update,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -733,4 +760,311 @@ func TestProviderGetDomainFilter(t *testing.T) {
 	if !filter.Match("app.example.com") || filter.Match("app.other.com") {
 		t.Fatalf("expected the provider's example.com filter, got: %+v", filter)
 	}
+}
+
+func TestProviderApplyChangesUpdatesInPlace(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+
+	fake.
+		WithZone("z-1", "example.com").
+		WithHost(dnscaster.Host{
+			ID:          "h-old",
+			ZoneID:      "z-1",
+			FQDN:        "app.example.com",
+			Hostname:    "app",
+			DNSType:     "A",
+			Data:        "1.2.3.4",
+			TTL:         300,
+			IPMonitorID: "m-old",
+			Properties: map[string]string{
+				dnscaster.ProviderMetadataOwnerID:                 "controller-1",
+				dnscaster.ProviderSpecificIPMonitorURI:            "ping",
+				dnscaster.ProviderSpecificIPMonitorTreatRedirects: "offline",
+			},
+		}).
+		WithMonitor(dnscaster.Monitor{
+			ID:              "m-old",
+			Name:            "app.example.com",
+			URI:             "ping://1.2.3.4",
+			Hostname:        "app.example.com",
+			TreatRedirects:  "offline",
+			NameserverSetID: "ns-1",
+		})
+
+	// An in-place update replaces nothing and needs no zone lookup.
+	fake.OnListZones = func() error { t.Fatal("unexpected call to ListZones()"); return nil }
+	fake.OnCreateHost = func(dnscaster.Host) error { t.Fatal("unexpected call to CreateHost()"); return nil }
+	fake.OnDeleteHost = func(string) error { t.Fatal("unexpected call to DeleteHost()"); return nil }
+	fake.OnCreateMonitor = func(dnscaster.Monitor) error { t.Fatal("unexpected call to CreateMonitor()"); return nil }
+	fake.OnDeleteMonitor = func(string) error { t.Fatal("unexpected call to DeleteMonitor()"); return nil }
+	fake.OnUpdateHost = func(hostID string, host dnscaster.Host) error {
+		if hostID != "h-old" {
+			t.Fatalf("expected hostID=h-old, got %q", hostID)
+		}
+		// Read-only and unchanged fields stay out of the update.
+		if host.ID != "" || host.FQDN != "" || host.Hostname != "" || host.ZoneID != "" {
+			t.Fatalf("expected only writable fields in the update, got: %+v", host)
+		}
+		return nil
+	}
+	fake.OnUpdateMonitor = func(monitorID string, mon dnscaster.Monitor) error {
+		if monitorID != "m-old" {
+			t.Fatalf("expected monitorID=m-old, got %q", monitorID)
+		}
+		return nil
+	}
+
+	old := endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(300), "1.2.3.4")
+	old.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+	old.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorTreatRedirects, "offline")
+
+	desired := endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(120), "5.6.7.8")
+	desired.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "https:///health")
+	desired.SetProviderSpecificProperty(dnscaster.ProviderSpecificLabelPrefix+"network", "eos")
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{old},
+		UpdateNew: []*endpoint.Endpoint{desired},
+	}
+	if err := p.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fake.Hosts["z-1"]) != 1 {
+		t.Fatalf("expected the host to be kept, got: %v", fake.Hosts["z-1"])
+	}
+	host := fake.Hosts["z-1"][0]
+	wantProperties := map[string]string{
+		dnscaster.ProviderMetadataOwnerID:      "controller-1",
+		dnscaster.ProviderSpecificIPMonitorURI: "https:///health",
+		"network":                              "eos",
+	}
+	switch {
+	case host.ID != "h-old" || host.IPMonitorID != "m-old":
+		t.Fatalf("expected host h-old to keep monitor m-old, got: %+v", host)
+	case host.Data != "5.6.7.8" || host.TTL != 120:
+		t.Fatalf("expected data=5.6.7.8 ttl=120, got: %+v", host)
+	case host.FQDN != "app.example.com" || host.Hostname != "app" || host.ZoneID != "z-1":
+		t.Fatalf("expected the host to keep its name and zone, got: %+v", host)
+	case !maps.Equal(host.Properties, wantProperties):
+		// Properties are replaced as a whole, so the removed annotation is gone.
+		t.Fatalf("expected properties %v, got: %v", wantProperties, host.Properties)
+	}
+
+	monitor := fake.Monitors["m-old"]
+	switch {
+	case monitor.URI != "https://5.6.7.8/health":
+		t.Fatalf("expected the monitor to follow the new target, got: %+v", monitor)
+	case monitor.TreatRedirects != "online":
+		t.Fatalf("expected treat_redirects reset to online, got: %+v", monitor)
+	case monitor.Name != "app.example.com" || monitor.Hostname != "app.example.com" || monitor.NameserverSetID != "ns-1":
+		t.Fatalf("expected the monitor to keep its name, hostname and nameserver set, got: %+v", monitor)
+	case !maps.Equal(monitor.Properties, wantProperties):
+		t.Fatalf("expected monitor properties %v, got: %v", wantProperties, monitor.Properties)
+	}
+}
+
+func TestProviderApplyChangesUpdateAddsMonitor(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+
+	fake.
+		WithZone("z-1", "example.com").
+		WithHost(dnscaster.Host{
+			ID:         "h-old",
+			ZoneID:     "z-1",
+			FQDN:       "app.example.com",
+			Hostname:   "app",
+			DNSType:    "A",
+			Data:       "1.2.3.4",
+			TTL:        300,
+			Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
+		})
+
+	fake.OnCreateHost = func(dnscaster.Host) error { t.Fatal("unexpected call to CreateHost()"); return nil }
+	fake.OnDeleteHost = func(string) error { t.Fatal("unexpected call to DeleteHost()"); return nil }
+	fake.OnUpdateMonitor = func(string, dnscaster.Monitor) error { t.Fatal("unexpected call to UpdateMonitor()"); return nil }
+	fake.OnCreateMonitor = func(mon dnscaster.Monitor) error {
+		if mon.URI != "ping://1.2.3.4" {
+			t.Fatalf("expected uri=ping://1.2.3.4, got %q", mon.URI)
+		}
+		return nil
+	}
+	fake.OnUpdateHost = func(hostID string, host dnscaster.Host) error {
+		if hostID != "h-old" || host.IPMonitorID != "m-1" {
+			t.Fatalf("expected host h-old to get monitor m-1, got: %s %+v", hostID, host)
+		}
+		return nil
+	}
+
+	desired := endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(300), "1.2.3.4")
+	desired.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(300), "1.2.3.4")},
+		UpdateNew: []*endpoint.Endpoint{desired},
+	}
+	if err := p.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if host := fake.Hosts["z-1"][0]; host.ID != "h-old" || host.IPMonitorID != "m-1" {
+		t.Fatalf("expected host h-old with monitor m-1, got: %+v", host)
+	}
+	if _, ok := fake.Monitors["m-1"]; !ok || len(fake.Monitors) != 1 {
+		t.Fatalf("expected monitor m-1 only, got: %v", fake.Monitors)
+	}
+}
+
+func TestProviderApplyChangesUpdateRemovingMonitorReplacesHost(t *testing.T) {
+	t.Parallel()
+
+	p, fake := newTestProvider(t)
+
+	fake.
+		WithZone("z-1", "example.com").
+		WithHost(dnscaster.Host{
+			ID:          "h-old",
+			ZoneID:      "z-1",
+			FQDN:        "app.example.com",
+			Hostname:    "app",
+			DNSType:     "A",
+			Data:        "1.2.3.4",
+			TTL:         300,
+			IPMonitorID: "m-old",
+			Properties: map[string]string{
+				dnscaster.ProviderMetadataOwnerID:      "controller-1",
+				dnscaster.ProviderSpecificIPMonitorURI: "ping",
+			},
+		}).
+		WithMonitor(dnscaster.Monitor{ID: "m-old", URI: "ping://1.2.3.4"})
+
+	fake.OnUpdateHost = func(string, dnscaster.Host) error { t.Fatal("unexpected call to UpdateHost()"); return nil }
+	fake.OnUpdateMonitor = func(string, dnscaster.Monitor) error { t.Fatal("unexpected call to UpdateMonitor()"); return nil }
+
+	old := endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(300), "1.2.3.4")
+	old.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+
+	changes := &plan.Changes{
+		UpdateOld: []*endpoint.Endpoint{old},
+		UpdateNew: []*endpoint.Endpoint{endpoint.NewEndpointWithTTL("app.example.com", "A", endpoint.TTL(300), "5.6.7.8")},
+	}
+	if err := p.ApplyChanges(context.Background(), changes); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fake.Hosts["z-1"]) != 1 {
+		t.Fatalf("expected a single host, got: %v", fake.Hosts["z-1"])
+	}
+	host := fake.Hosts["z-1"][0]
+	if host.ID == "h-old" || host.IPMonitorID != "" || host.Data != "5.6.7.8" || host.Hostname != "app" || host.ZoneID != "z-1" {
+		t.Fatalf("expected a new host without a monitor, got: %+v", host)
+	}
+	if len(fake.Monitors) != 0 {
+		t.Fatalf("expected the monitor to be deleted, got: %v", fake.Monitors)
+	}
+}
+
+func TestProviderApplyChangesUpdateErrors(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("boom")
+
+	t.Run("should error when the host to update is unknown", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.WithZone("z-1", "example.com")
+
+		changes := &plan.Changes{
+			UpdateOld: []*endpoint.Endpoint{endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")},
+			UpdateNew: []*endpoint.Endpoint{endpoint.NewEndpoint("app.example.com", "A", "5.6.7.8")},
+		}
+		err := p.ApplyChanges(context.Background(), changes)
+		if err == nil || !strings.Contains(err.Error(), "no host found") {
+			t.Fatalf("expected a not found error, got: %v", err)
+		}
+	})
+
+	t.Run("should error when old and new records do not pair up", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.OnListHosts = func() error { t.Fatal("unexpected call to ListHosts()"); return nil }
+
+		changes := &plan.Changes{
+			UpdateOld: []*endpoint.Endpoint{endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")},
+		}
+		err := p.ApplyChanges(context.Background(), changes)
+		if err == nil || !strings.Contains(err.Error(), "malformed changes") {
+			t.Fatalf("expected a malformed changes error, got: %v", err)
+		}
+	})
+
+	t.Run("should leave the host untouched when its monitor update fails", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.
+			WithZone("z-1", "example.com").
+			WithHost(dnscaster.Host{
+				ID:          "h-old",
+				ZoneID:      "z-1",
+				FQDN:        "app.example.com",
+				DNSType:     "A",
+				Data:        "1.2.3.4",
+				IPMonitorID: "m-old",
+				Properties:  map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1", dnscaster.ProviderSpecificIPMonitorURI: "ping"},
+			}).
+			WithMonitor(dnscaster.Monitor{ID: "m-old", URI: "ping://1.2.3.4"})
+		fake.OnUpdateMonitor = func(string, dnscaster.Monitor) error { return boom }
+		fake.OnUpdateHost = func(string, dnscaster.Host) error { t.Fatal("unexpected call to UpdateHost()"); return nil }
+
+		old := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+		old.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+		desired := endpoint.NewEndpoint("app.example.com", "A", "5.6.7.8")
+		desired.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+
+		changes := &plan.Changes{UpdateOld: []*endpoint.Endpoint{old}, UpdateNew: []*endpoint.Endpoint{desired}}
+		if err := p.ApplyChanges(context.Background(), changes); !errors.Is(err, boom) {
+			t.Fatalf("expected the monitor update error, got: %v", err)
+		}
+		if host := fake.Hosts["z-1"][0]; host.Data != "1.2.3.4" {
+			t.Fatalf("expected the host to be untouched, got: %+v", host)
+		}
+	})
+
+	t.Run("should delete a new monitor when the host update fails", func(t *testing.T) {
+		t.Parallel()
+
+		p, fake := newTestProvider(t)
+		fake.
+			WithZone("z-1", "example.com").
+			WithHost(dnscaster.Host{
+				ID:         "h-old",
+				ZoneID:     "z-1",
+				FQDN:       "app.example.com",
+				DNSType:    "A",
+				Data:       "1.2.3.4",
+				Properties: map[string]string{dnscaster.ProviderMetadataOwnerID: "controller-1"},
+			})
+		fake.OnUpdateHost = func(string, dnscaster.Host) error { return boom }
+
+		desired := endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")
+		desired.SetProviderSpecificProperty(dnscaster.ProviderSpecificIPMonitorURI, "ping")
+
+		changes := &plan.Changes{
+			UpdateOld: []*endpoint.Endpoint{endpoint.NewEndpoint("app.example.com", "A", "1.2.3.4")},
+			UpdateNew: []*endpoint.Endpoint{desired},
+		}
+		if err := p.ApplyChanges(context.Background(), changes); !errors.Is(err, boom) {
+			t.Fatalf("expected the host update error, got: %v", err)
+		}
+		if len(fake.Monitors) != 0 {
+			t.Fatalf("expected the monitor to be deleted, got: %v", fake.Monitors)
+		}
+	})
 }

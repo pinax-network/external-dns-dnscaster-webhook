@@ -41,8 +41,8 @@ func TestAnnotationsCreateMonitorWithDefaults(t *testing.T) {
 		if req.Hostname != "new.example.com" {
 			t.Fatalf("expected hostname=new.example.com, got %q", req.Hostname)
 		}
-		if req.TreatRedirects != "" {
-			t.Fatalf("expected treat_redirects='', got %q", req.TreatRedirects)
+		if req.TreatRedirects != "online" {
+			t.Fatalf("expected treat_redirects=online, got %q", req.TreatRedirects)
 		}
 		return nil
 	}

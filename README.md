@@ -25,6 +25,22 @@ to your DNScaster service provider.
 
 - IP Monitors are only supported for A/AAAA records.
 
+## How Changes Are Applied
+
+ExternalDNS sends the webhook batches of records to create, update and delete.
+They are applied in this order: deletions, then updates, then creations.
+
+- A deleted record removes its host, then the monitor the host used.
+- An updated record changes its host in place with `PUT`: data, TTL and
+  properties are sent, and its monitor is updated the same way, so the host and
+  monitor keep their IDs. A record gaining a monitor annotation gets a new
+  monitor. A record losing it is deleted and created again, as the update cannot
+  detach the monitor from the host, and a monitor in use cannot be deleted.
+- A created record gets its monitor first, then its host.
+
+Properties are replaced as a whole on every update, so labels removed from the
+annotations are removed from the host and its monitor too.
+
 ## Configuration Options
 
 ### DNScaster Connection Configuration
