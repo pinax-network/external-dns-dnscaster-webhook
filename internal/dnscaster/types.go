@@ -37,6 +37,9 @@ type Host struct {
 // GetID implements pageable.
 func (h Host) GetID() string { return h.ID }
 
+// defaultTreatRedirects is the API default for a monitor's treat_redirects.
+const defaultTreatRedirects = "online"
+
 type Monitor struct {
 	ID              string            `json:"id,omitempty"`
 	Name            string            `json:"name,omitempty"`
